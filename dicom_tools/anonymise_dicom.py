@@ -2,7 +2,7 @@ import os
 
 import pandas as pd
 import pydicom as dicom
-import dicognito.anonymizer
+
 from presidio_image_redactor import DicomImageRedactorEngine
 from presidio_anonymizer import AnonymizerEngine
 from pydicom.pixel_data_handlers.util import apply_voi_lut
@@ -125,35 +125,42 @@ def _anonymise_with_transformer(pipe, text) -> str:
     return text
 
 
-if __name__ == "__main__":
-    PROJECT_FOLDER = os.getcwd()
-    IMG_PATH = os.path.join(PROJECT_FOLDER, 'sample_data/3_ORIGINAL.dcm') 
-    
-    
-    ds = dicom.dcmread(IMG_PATH)
-    dicom_metadata = {str(elem.tag): _parse_value(elem.value) for elem in ds.elements()}
-    df = pd.DataFrame.from_dict({k:[v] for k,v in dicom_metadata.items()})
-    df.to_csv(IMG_PATH.replace(".dcm", ".csv"), index=False)
-
+def anonymise_image(ds, score_threshold=0.5):
     engine = DicomImageRedactorEngine()
-    redacted_dicom_instance = engine.redact(ds, fill="contrast")  # fill="background")
+    #ds = engine.redact(ds, fill="contrast")  # fill="background")
 
     analyser = _build_analyser()
     anonymizer = AnonymizerEngine()
-    operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
+    #operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     multilingual_nlp, profession_nlp = _build_transformers()
-    for element in redacted_dicom_instance.elements():
-        elem = redacted_dicom_instance[element.tag]
+    for element in ds.elements():
+        elem = ds[element.tag]
         if elem.VR == "PN":
             elem.value = ["XXXX"]
         elif elem.VR in ["LO", "LT", "OW", "SH", "ST", "UC", "UT"]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1
             try:
-                analyzer_results = analyser.analyze(text=elem.value, language="en", score_threshold=0.5)
-                anonymized_text = anonymizer.anonymize(text=elem.value, analyzer_results=analyzer_results, operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}).text
+                analyzer_results = analyser.analyze(text=elem.value, language="en", score_threshold=score_threshold)
+                anonymized_text = anonymizer.anonymize(text=elem.value, 
+                                                       analyzer_results=analyzer_results, 
+                                                       operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}).text
                 anonymized_text = _anonymise_with_transformer(multilingual_nlp, anonymized_text)
                 anonymized_text = _anonymise_with_transformer(profession_nlp, anonymized_text)
                 elem.value = anonymized_text
             except:
                 print(elem.tag) 
+    return ds
 
+
+"""
+if __name__ == "__main__":
+    PROJECT_FOLDER = os.getcwd()
+    IMG_PATH = os.path.join(PROJECT_FOLDER, 'sample_data/3_ORIGINAL.dcm')
+    ds = dicom.dcmread(IMG_PATH)
+
+    dicom_metadata = {str(elem.tag): _parse_value(elem.value) for elem in ds.elements()}
+    df = pd.DataFrame.from_dict({k:[v] for k,v in dicom_metadata.items()})
+    df.to_csv(IMG_PATH.replace(".dcm", ".csv"), index=False)
+
+    redacted_dicom_instance = anonymise_image(ds)
     redacted_dicom_instance.save_as(IMG_PATH.replace('ORIGINAL', 'ANONYMIZED'))
+"""
