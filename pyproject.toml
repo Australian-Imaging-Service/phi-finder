@@ -10,6 +10,7 @@ version = "2025.3.0"
 requires-python = ">=3.10"
 dependencies = ["typing_extensions >=4.6.3; python_version < '3.11'",
                 "pydicom==3.0.1",
+                "numpy<2.0",
                 "pandas==2.2.3",
                 "faker==36.1.1",
                 "presidio_structured==0.0.4a0",
@@ -22,7 +23,7 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '3.11'",
                 "pdfminer.six==20240706",
                 "opencv-python==4.10.0.84",
                 "transformers==4.48.2",
-                "torch==2.6.0",
+                "torch==2.2.0",
                 "dicognito==0.18.0",
 ]
 
