@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ml_anonymisation"
+name = "ml-anonymisation"
 description = "Collection of tools to check uploaded scans and records for identifiable data."
 readme = "README.md"
 version = "2025.3.0"
