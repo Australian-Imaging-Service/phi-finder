@@ -17,13 +17,13 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "presidio-image-redactor==0.0.53",
                 "presidio_analyzer==2.2.355",
                 "presidio_anonymizer==2.2.355",
-                "spacy==3.8.5",
+                "spacy",
                 "PyMuPDF==1.24.13",
                 "pikepdf==9.4.0",
                 "pdfminer.six==20240706",
                 "opencv-python==4.10.0.84",
                 "transformers==4.48.2",
-                "torch==2.6.0",
+                "torch",
                 "dicognito==0.18.0",
 ]
 
@@ -102,8 +102,8 @@ exclude = [
 [tool.poetry]
 name = "ml-anonymisation"
 version = "2025.4.0"
-description = ""
-authors = [""]
+description = "Collection of tools to check uploaded scans and records for identifiable data."
+authors = [{ name = "Pedro Faustini", email = "pedro.faustini@mq.edu.au" }]
 
 [tool.codespell]
 ignore-words = ".codespell-ignorewords"
