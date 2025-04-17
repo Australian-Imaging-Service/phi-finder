@@ -82,7 +82,7 @@ repository = "https://github.com/Australian-Imaging-Service/ml-anonymisation"
 
 
 [tool.hatch.build.targets.wheel]
-packages = ["dicom_tools"]
+packages = ["ml_anonymisation"]
 
 [tool.mypy]
 python_version = "3.8"
