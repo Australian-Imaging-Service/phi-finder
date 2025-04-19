@@ -25,6 +25,7 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "transformers==4.48.2",
                 "torch",
                 "dicognito==0.18.0",
+                "fileformats-medimage-extras",
 ]
 
 authors = [{ name = "Pedro Faustini", email = "pedro.faustini@mq.edu.au" }]
@@ -63,8 +64,12 @@ test = [
     "pytest >=6.2.5",
     "pytest-env>=0.6.2",
     "pytest-cov>=2.12.1",
-    "pydra >0.24",
+    "pydra @ git+https://github.com/nipype/pydra@develop",
+    "framtree-xnat >=0.6.3",
+    "xnat4tests",
+    "medimages4tests",
     "fileformats-extras",
+    "fileformats-medimage-extras",
 ]
 docs = [
     "packaging",
