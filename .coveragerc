@@ -1,0 +1,3 @@
+[run]
+omit = */tests/*, ml_anonymisation/_version.py
+branch = true
