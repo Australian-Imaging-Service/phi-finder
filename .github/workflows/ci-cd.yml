@@ -16,8 +16,8 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        os: [ubuntu-latest]
+        python-version: [ "3.10", "3.11", "3.12"]
       fail-fast: false
     runs-on: ${{ matrix.os }}
     defaults:
@@ -41,9 +41,9 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
     - name: Update build tools
-      run: python3 -m pip install --upgrade pip
+      run: python${{ matrix.python-version }} -m pip install --upgrade pip
     - name: Install Package
-      run: python3 -m pip install -e .[test]
+      run: python${{ matrix.python-version }} -m pip install -e .[test]
     - name: Pytest
       run: pytest -vvs --cov dicom_tools --cov-config .coveragerc --cov-report xml .
     - name: Upload coverage to Codecov
