@@ -65,7 +65,7 @@ test = [
     "pytest-env>=0.6.2",
     "pytest-cov>=2.12.1",
     "pydra @ git+https://github.com/nipype/pydra@develop",
-    "framtree-xnat >=0.6.3",
+    "frametree-xnat >=0.6.3",
     "xnat4tests",
     "medimages4tests",
     "fileformats-extras",
