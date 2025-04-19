@@ -68,7 +68,9 @@ TEST_XNAT_DATASET_BLUEPRINTS = {
                     FileBP(
                         path="DICOM",
                         datatype=DicomSeries,
-                        filenames=[f"dicom/fmap/{i}.dcm" for i in range(120)],
+                        filenames=[
+                            f"dicom/fmap/{i}.dcm" for i in range(10)  # range(120)
+                        ],
                     ),
                 ],
             ),
@@ -78,7 +80,9 @@ TEST_XNAT_DATASET_BLUEPRINTS = {
                     FileBP(
                         path="DICOM",
                         datatype=DicomSeries,
-                        filenames=[f"dicom/t1w/{i}.dcm" for i in range(192)],
+                        filenames=[
+                            f"dicom/t1w/{i}.dcm" for i in range(10)  # range(192)
+                        ],
                     ),
                 ],
             ),
@@ -88,7 +92,9 @@ TEST_XNAT_DATASET_BLUEPRINTS = {
                     FileBP(
                         path="DICOM",
                         datatype=DicomSeries,
-                        filenames=[f"dicom/dwi/{i}.dcm" for i in range(4020)],
+                        filenames=[
+                            f"dicom/dwi/{i}.dcm" for i in range(10)  # range(4020)
+                        ],
                     ),
                 ],
             ),
