@@ -89,6 +89,9 @@ repository = "https://github.com/Australian-Imaging-Service/ml-anonymisation"
 [tool.hatch.build.targets.wheel]
 packages = ["ml_anonymisation"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.mypy]
 python_version = "3.8"
 ignore_missing_imports = true
