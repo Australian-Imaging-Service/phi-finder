@@ -54,5 +54,3 @@ def test_utils_anonymise_scans(tmp_path: Path, data_row: DataRow) -> None:
         path_and_dicom_dict["dicom"], path_and_dicom_dict["dicom_anonymised"]
     ):
         assert type(original) == type(anonymised)
-    
-
