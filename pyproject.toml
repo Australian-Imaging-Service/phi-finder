@@ -7,24 +7,24 @@ name = "ml-anonymisation"
 description = "Collection of tools to check uploaded scans and records for identifiable data."
 readme = "README.md"
 version = "2025.4.0"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
-                "pydicom==3.0.1",
                 "numpy",
-                "pandas==2.2.3",
-                "faker==36.1.1",
-                "presidio_structured==0.0.4a0",
-                "presidio-image-redactor==0.0.53",
-                "presidio_analyzer==2.2.355",
-                "presidio_anonymizer==2.2.355",
+                "pandas>=2.2.3",
+                "faker>=36.1.1",
+                "presidio_structured>=0.0.4a0",
+                "presidio-image-redactor>=0.0.53",
+                "presidio_analyzer>=2.2.355",
+                "presidio_anonymizer>=2.2.355",
                 "spacy",
-                "PyMuPDF==1.24.13",
-                "pikepdf==9.4.0",
-                "pdfminer.six==20240706",
-                "opencv-python==4.10.0.84",
-                "transformers==4.48.2",
+                "PyMuPDF>=1.24.13",
+                "pikepdf>=9.4.0",
+                "pdfminer.six>=20240706",
+                "opencv-python>=4.10.0.84",
+                "transformers>=4.48.2",
                 "torch",
-                "dicognito==0.18.0",
+                "dicognito>=0.17.0",
+                "fileformats-medimage-extras",
 ]
 
 authors = [{ name = "Pedro Faustini", email = "pedro.faustini@mq.edu.au" }]
@@ -63,8 +63,13 @@ test = [
     "pytest >=6.2.5",
     "pytest-env>=0.6.2",
     "pytest-cov>=2.12.1",
-    "pydra >0.24",
+    "pydra @ git+https://github.com/nipype/pydra@develop",
+    "frametree-xnat >=0.6.3",
+    "xnat4tests",
+    "medimages4tests",
     "fileformats-extras",
+    "fileformats-medimage-extras",
+    "xnat >=0.7.0"
 ]
 docs = [
     "packaging",
@@ -81,11 +86,25 @@ docs = [
 repository = "https://github.com/Australian-Imaging-Service/ml-anonymisation"
 
 
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "ml_anonymisation/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["ml_anonymisation"]
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+packages = ["ml_anonymisation"]
+exclude = ["tests"]
+include = ["./ml_anonymisation"]
+
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.11"
 ignore_missing_imports = true
 strict = true
 namespace_packages = true
@@ -96,14 +115,14 @@ exclude = [
     "docs",
     "build",
     "dist",
-    "fileformats/core/_version.py",
+    "ml_anonymisation/_version.py",
 ]
 
-[tool.poetry]
-name = "ml-anonymisation"
-version = "2025.4.0"
-description = "Collection of tools to check uploaded scans and records for identifiable data."
-authors = ["Pedro Faustini"]
+# [tool.poetry]
+# name = "ml-anonymisation"
+# version = "2025.4.0"
+# description = "Collection of tools to check uploaded scans and records for identifiable data."
+# authors = ["Pedro Faustini"]
 
 [tool.codespell]
 ignore-words = ".codespell-ignorewords"

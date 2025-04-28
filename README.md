@@ -1,17 +1,19 @@
-### ML-Anonymisation
+# ML-Anonymisation
 
-### Building
+[![CI/CD](https://github.com/australian-imaging-service/ml-anonymisation/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/australian-imaging-service/ml-anonymisation/actions/workflows/ci-cd.yml)
+[![Codecov](https://codecov.io/gh/australian-imaging-service/ml-anonymisation/branch/main/graph/badge.svg?token=UIS0OGPST7)](https://codecov.io/gh/australian-imaging-service/ml-anonymisation)
 
-```
+## Building
+
+```bash
 python -m pip install --upgrade build
 
-python -m build 
+python -m build
 
 pip install dist/ml_anonymisation-2025.3.0-py3-none-any.whl
 ```
 
-
-### (Very) Basic usage
+## (Very) Basic usage
 
 ```python
 import pydicom as dicom
