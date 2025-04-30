@@ -24,12 +24,27 @@ def extract_dicom_from_data_row(data_row: DataRow) -> dict:
 
 def anonymise_scans(data_row: DataRow):
     """
-    Anonymises the dicom series in the data row.
+    Anonymises all dicom in the data row.
+
+    A dict with the keys 'path', 'dicom' and 'dicom_anonymised' is returned.
     """
-    path2dicom = extract_dicom_from_data_row(data_row)
-    path2dicom["dicom_anonymised"] = []
-    for path, dicom in zip(path2dicom["path"], path2dicom["dicom"]):
+    path_and_dicom_dict = extract_dicom_from_data_row(data_row)
+    path_and_dicom_dict["dicom_anonymised"] = []
+    for path, dicom in zip(path_and_dicom_dict["path"], path_and_dicom_dict["dicom"]):
         anonymised_dicom = anonymise_dicom.anonymise_image(dicom)
-        path2dicom["dicom_anonymised"].append(anonymised_dicom)
-    return path2dicom
-    
+        path_and_dicom_dict["dicom_anonymised"].append(anonymised_dicom)
+    return path_and_dicom_dict
+
+
+def rename_dicom_file(dicom_path: Path) -> Path:
+    """
+    Renames the dicom file to a new name.
+    The new name is the same as the original name, but ending with the suffix _deidentified.
+
+    Example: "dicom_path/1.dcm" -> "dicom_path/1_deidentified.dcm"
+    """
+    file_stem = dicom_path.stem  # e.g. 1
+    file_extension = dicom_path.suffix  # e.g. .dcm
+    new_file_name = f"{file_stem}_deidentified{file_extension}"
+    new_dicom_path = dicom_path.parent / new_file_name
+    return new_dicom_path
