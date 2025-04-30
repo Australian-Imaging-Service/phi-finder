@@ -68,3 +68,10 @@ def test_rename_dicom_file():
     assert new_path3 == Path("dcm/p/3_deidentified.dcm")
 
 
+def test_put_dicom_back(data_row: DataRow):
+    path_and_dicom_dict = utils.extract_dicom_from_data_row(data_row)
+    path_and_dicom_dict["path_anonymised"] = []
+
+    for path in path_and_dicom_dict["path"]:
+        path_and_dicom_dict["path_anonymised"].append(utils.rename_dicom_file(path))
+    assert len(path_and_dicom_dict["path_anonymised"]) == 30
