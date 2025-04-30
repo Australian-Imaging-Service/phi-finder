@@ -67,8 +67,8 @@ test = [
     "frametree-xnat >=0.6.4",
     "xnat4tests >=0.3.12",
     "medimages4tests >=0.5.7",
-    "fileformats-extras >=0.15.1",
-    "fileformats-medimage-extras >=0.15.1",
+    "fileformats-extras",
+    "fileformats-medimage-extras",
     "xnat >=0.7.0"
 ]
 docs = [
