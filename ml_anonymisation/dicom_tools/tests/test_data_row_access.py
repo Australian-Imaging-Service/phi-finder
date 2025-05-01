@@ -41,8 +41,6 @@ def test_utils_extract_dicom_from_data_row(tmp_path: Path, data_row: DataRow) ->
 
 
 def test_utils_anonymise_scans(tmp_path: Path, data_row: DataRow) -> None:
-    for key in data_row.entries_dict.keys():  # Subset to speed up the test
-        data_row.entry(key).item.contents = data_row.entry(key).item.contents[:2] 
     path_and_dicom_dict = utils.anonymise_scans(data_row)
     assert "path" in path_and_dicom_dict.keys()
     assert "dicom" in path_and_dicom_dict.keys()
@@ -54,3 +52,27 @@ def test_utils_anonymise_scans(tmp_path: Path, data_row: DataRow) -> None:
         path_and_dicom_dict["dicom"], path_and_dicom_dict["dicom_anonymised"]
     ):
         assert type(original) == type(anonymised)
+
+"""
+def test_rename_dicom_file():
+    path1 = Path('/tmp/tmp2puqail2/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6.dcm')
+    path2 = Path('/tmp/dcm/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6.dcm')
+    path3 = Path("dcm/p/3.dcm")
+
+    new_path1 = utils.rename_dicom_file(path1)
+    new_path2 = utils.rename_dicom_file(path2)
+    new_path3 = utils.rename_dicom_file(path3)
+
+    assert new_path1 == Path('/tmp/tmp2puqail2/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6_deidentified.dcm')
+    assert new_path2 == Path('/tmp/dcm/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6_deidentified.dcm')
+    assert new_path3 == Path("dcm/p/3_deidentified.dcm")
+
+
+def test_put_dicom_back(data_row: DataRow):
+    path_and_dicom_dict = utils.extract_dicom_from_data_row(data_row)
+    path_and_dicom_dict["path_anonymised"] = []
+
+    for path in path_and_dicom_dict["path"]:
+        path_and_dicom_dict["path_anonymised"].append(utils.rename_dicom_file(path))
+    assert len(path_and_dicom_dict["path_anonymised"]) == 30
+"""
