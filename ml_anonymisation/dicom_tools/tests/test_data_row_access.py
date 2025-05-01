@@ -53,7 +53,6 @@ def test_utils_anonymise_scans(tmp_path: Path, data_row: DataRow) -> None:
     ):
         assert type(original) == type(anonymised)
 
-"""
 def test_rename_dicom_file():
     path1 = Path('/tmp/tmp2puqail2/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6.dcm')
     path2 = Path('/tmp/dcm/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6.dcm')
@@ -67,7 +66,7 @@ def test_rename_dicom_file():
     assert new_path2 == Path('/tmp/dcm/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6_deidentified.dcm')
     assert new_path3 == Path("dcm/p/3_deidentified.dcm")
 
-
+"""
 def test_put_dicom_back(data_row: DataRow):
     path_and_dicom_dict = utils.extract_dicom_from_data_row(data_row)
     path_and_dicom_dict["path_anonymised"] = []
