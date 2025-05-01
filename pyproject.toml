@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "ml-anonymisation"
 description = "Collection of tools to check uploaded scans and records for identifiable data."
 readme = "README.md"
-version = "2025.4.0"
+version = "2025.5.0"
 requires-python = ">=3.11,<3.13"
 dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "numpy",
@@ -117,12 +117,6 @@ exclude = [
     "dist",
     "ml_anonymisation/_version.py",
 ]
-
-# [tool.poetry]
-# name = "ml-anonymisation"
-# version = "2025.4.0"
-# description = "Collection of tools to check uploaded scans and records for identifiable data."
-# authors = ["Pedro Faustini"]
 
 [tool.codespell]
 ignore-words = ".codespell-ignorewords"
