@@ -33,7 +33,10 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
     return data_row
 
 
-def _list_dicom_files(data_row, session_key=None) -> int:
+def _count_dicom_files(data_row, session_key=None) -> int:
+    """Counts the number of dicom files in a data row.
+    If session_key is None, it counts the number of dicom files in all sessions.
+    """
     def _list(session_key):
         dicom_series = data_row.entry(session_key).item
         for i, dicom in enumerate(dicom_series.contents):
