@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "ml-anonymisation"
 description = "Collection of tools to check uploaded scans and records for identifiable data."
 readme = "README.md"
-# version = "2025.4.0"
+version = "2025.5.0"
 requires-python = ">=3.11,<3.13"
 dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "numpy",
@@ -63,7 +63,7 @@ test = [
     "pytest >=6.2.5",
     "pytest-env>=0.6.2",
     "pytest-cov>=2.12.1",
-    "pydra @ git+https://github.com/nipype/pydra@develop",
+    "pydra==1.0a1",
     "frametree-xnat >=0.6.4",
     "xnat4tests",
     "medimages4tests",
