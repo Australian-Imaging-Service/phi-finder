@@ -12,27 +12,26 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
         Create a new session entry
         Loop over images in session
             Anonymise the image
-            Rename the image
-            Ingest the anonymised image into the new session entry
+            Create a new name for the anonymised image
+            Save the anonymised image into the new session entry
+        Add the paths of the anonymised images to the new session entry
     """
     session_keys = list(data_row.entries_dict.keys())  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
     for session_key in session_keys:
-        deid_session_key = session_key + "@deidentified"
+        anonymised_session_key = session_key.replace("/DICOM", "@deidentified")
         dicom_series = data_row.entry(session_key).item
         anonymised_dcms = []
-        deid_dicom_paths = []
-        deid_session_entry = data_row.create_entry(deid_session_key, datatype=DicomSeries)
+        anonymised_dicom_paths = []
+        anonymised_session_entry = data_row.create_entry(anonymised_session_key, datatype=DicomSeries)
         for dicom in dicom_series.contents:
             dcm = pydicom.dcmread(dicom)
-            anonymised_dcms.append(anonymise_dicom.anonymise_image(dcm))
-            deid_dicom_paths.append(rename_dicom_file(dicom.absolute()))
-            #data_row.add_entry(path=deid_session_key,
-            #                   uri=deid_dicom_path,
-            #                   datatype=DicomSeries,
-            #                   order=1)
-        for deid_dicom_path, dicom_anonymised in zip(deid_dicom_paths, anonymised_dcms):
-            dicom_series.new(fspath=deid_dicom_path, data=dicom_anonymised)
-              
+            anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
+            anonymised_dicom_path = create_new_dicom_filepath(dicom.absolute())
+            anonymised_dicom_paths.append(anonymised_dicom_path)
+            anonymised_dcm.save_as(anonymised_dicom_path)
+        anonymised_session_entry.item = DicomSeries(anonymised_dicom_paths)
+    return data_row
+
 
 def _list_dicom_files(data_row, session_key=None) -> int:
     def _list(session_key):
@@ -50,7 +49,7 @@ def _list_dicom_files(data_row, session_key=None) -> int:
         return _list(session_key)
 
 
-def rename_dicom_file(dicom_path: Path) -> Path:
+def create_new_dicom_filepath(dicom_path: Path) -> Path:
     """
     Renames the dicom file to a new name.
     The new name is the same as the original name, but ending with the suffix _deidentified.

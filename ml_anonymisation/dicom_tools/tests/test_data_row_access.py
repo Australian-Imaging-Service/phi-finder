@@ -32,14 +32,14 @@ def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
     #               order='3', quality=None)])
 
 
-def test_rename_dicom_file():
+def test_create_new_dicom_filepath():
     path1 = Path('/tmp/tmp2puqail2/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6.dcm')
     path2 = Path('/tmp/dcm/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6.dcm')
     path3 = Path("dcm/p/3.dcm")
 
-    new_path1 = utils.rename_dicom_file(path1)
-    new_path2 = utils.rename_dicom_file(path2)
-    new_path3 = utils.rename_dicom_file(path3)
+    new_path1 = utils.create_new_dicom_filepath(path1)
+    new_path2 = utils.create_new_dicom_filepath(path2)
+    new_path3 = utils.create_new_dicom_filepath(path3)
 
     assert new_path1 == Path('/tmp/tmp2puqail2/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6_deidentified.dcm')
     assert new_path2 == Path('/tmp/dcm/20250429170214basicfa14/subjects/Xnat4Tests_S00006/experiments/Xnat4Tests_E00006/scans/1/resources/DICOM/6_deidentified.dcm')
@@ -47,6 +47,6 @@ def test_rename_dicom_file():
 
 
 def test_ingest_anonymised_dicom(data_row: DataRow):
-    #utils.deidentify_dicom(data_row)
+    data_row = utils.deidentify_dicom_files(data_row)
     n_scans = utils._list_dicom_files(data_row, session_key=None)
-    n_scans == 30
+    n_scans == 60
