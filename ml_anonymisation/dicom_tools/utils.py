@@ -19,17 +19,13 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
     session_keys = list(data_row.entries_dict.keys())  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
     for session_key in session_keys:
         anonymised_session_key = session_key.replace("/DICOM", "@deidentified")
-        dicom_series = data_row.entry(session_key).item
-        anonymised_dcms = []
-        anonymised_dicom_paths = []
         anonymised_session_entry = data_row.create_entry(anonymised_session_key, datatype=DicomSeries)
-        for dicom in dicom_series.contents:
+        dicom_series = data_row.entry(session_key).item
+        anonymised_session_entry.item = DicomSeries(dicom_series.contents)
+        for dicom in data_row.entry(anonymised_session_key).item.contents:
             dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
-            anonymised_dicom_path = create_new_dicom_filepath(dicom.absolute())
-            anonymised_dicom_paths.append(anonymised_dicom_path)
-            anonymised_dcm.save_as(anonymised_dicom_path)
-        anonymised_session_entry.item = DicomSeries(anonymised_dicom_paths)
+            anonymised_dcm.save_as(dicom)
     return data_row
 
 
