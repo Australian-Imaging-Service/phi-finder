@@ -20,7 +20,11 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
     for session_key in session_keys:
         anonymised_session_key = session_key.replace("/DICOM", "@deidentified")
         anonymised_session_entry = data_row.create_entry(anonymised_session_key, datatype=DicomSeries)
-        dicom_series = data_row.entry(session_key).item
+        try:
+            dicom_series = data_row.entry(session_key).item
+        except:
+            print(f"Nothing found in data row {session_key}.")
+            continue
         anonymised_session_entry.item = DicomSeries(dicom_series.contents)
         for dicom in data_row.entry(anonymised_session_key).item.contents:
             dcm = pydicom.dcmread(dicom)
@@ -34,10 +38,16 @@ def _count_dicom_files(data_row, session_key=None) -> int:
     If session_key is None, it counts the number of dicom files in all sessions.
     """
     def _list(session_key):
-        dicom_series = data_row.entry(session_key).item
+        try:
+            dicom_series = data_row.entry(session_key).item
+        except:
+            print(f"Nothing found in data row {session_key}.")
+            return 0
+
         for i, dicom in enumerate(dicom_series.contents):
             print(i, dicom.absolute())
         return i+1  # Returning the number of dicom files in the series.
+
     if not session_key:
         session_keys = list(data_row.entries_dict.keys())  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
         n_scans = 0
@@ -46,17 +56,4 @@ def _count_dicom_files(data_row, session_key=None) -> int:
         return n_scans
     else:
         return _list(session_key)
-
-
-def create_new_dicom_filepath(dicom_path: Path) -> Path:
-    """
-    Renames the dicom file to a new name.
-    The new name is the same as the original name, but ending with the suffix _deidentified.
-
-    Example: "dicom_path/1.dcm" -> "dicom_path/1_deidentified.dcm"
-    """
-    file_stem = dicom_path.stem  # e.g. 1
-    file_extension = dicom_path.suffix  # e.g. .dcm
-    new_file_name = f"{file_stem}_deidentified{file_extension}"
-    new_dicom_path = dicom_path.parent / new_file_name
-    return new_dicom_path
+    
