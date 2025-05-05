@@ -12,24 +12,10 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
 
 
-def _parse_value(value):
-    if isinstance(value, list):
-        return value
-    try:
-        value = int(value)
-    except:
-        try:
-            value = float(value)
-        except:
-            value = str(value)[0:1000]
-            value = value.replace("\n", " ").replace("\r", " ").replace("^", " ")
-    return value
-
-
 def _build_analyser():
     configuration = {
         "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "en", "model_name": "en_core_web_md"}],
+        "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
     }
     provider = NlpEngineProvider(nlp_configuration=configuration)
     nlp_engine = provider.create_engine()
@@ -317,18 +303,3 @@ def anonymise_image(ds, score_threshold=0.5):
             except:
                 print(elem.tag)
     return ds
-
-
-"""
-if __name__ == "__main__":
-    PROJECT_FOLDER = os.getcwd()
-    IMG_PATH = os.path.join(PROJECT_FOLDER, 'sample_data/3_ORIGINAL.dcm')
-    ds = dicom.dcmread(IMG_PATH)
-
-    dicom_metadata = {str(elem.tag): _parse_value(elem.value) for elem in ds.elements()}
-    df = pd.DataFrame.from_dict({k:[v] for k,v in dicom_metadata.items()})
-    df.to_csv(IMG_PATH.replace(".dcm", ".csv"), index=False)
-
-    redacted_dicom_instance = anonymise_image(ds)
-    redacted_dicom_instance.save_as(IMG_PATH.replace('ORIGINAL', 'ANONYMIZED'))
-"""

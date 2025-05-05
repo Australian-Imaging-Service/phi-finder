@@ -10,16 +10,16 @@ python -m pip install --upgrade build
 
 python -m build
 
-pip install dist/ml_anonymisation-2025.3.0-py3-none-any.whl
+pip install dist/ml_anonymisation-2025.5.0-py3-none-any.whl
 ```
 
 ## (Very) Basic usage
 
 ```python
 import pydicom as dicom
-from dicom_tools import anonymise_dicom
+from ml_anonymisation.dicom_tools import anonymise_dicom
 
-ds = dicom.dcmread("/path/to/some/dicom.dcm")
-ds = anonymise_dicom.anonymise_image(ds)
+dcm = dicom.dcmread("/path/to/some/dicom.dcm")
+anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
 
 ```
