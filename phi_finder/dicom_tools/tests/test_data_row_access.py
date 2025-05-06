@@ -2,7 +2,7 @@ from pathlib import Path
 from frametree.core.row import DataRow
 import pydicom
 
-from ml_anonymisation.dicom_tools import anonymise_dicom, utils
+from phi_finder.dicom_tools import anonymise_dicom, utils
 
 
 def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
