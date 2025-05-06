@@ -38,7 +38,7 @@ def deidentify_dicom_files(data_row: DataRow) -> DataRow:
         for i, dicom in enumerate(dicom_series.contents):
             dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
-            tmp_path = Path(f"anonymised-tmp_{i}.dcm")
+            tmp_path = Path(f"anonymised{i}-tmp_{dicom.stem}.dcm")
             anonymised_dcm.save_as(tmp_path)
             tmps_paths.append(tmp_path)
 
@@ -54,7 +54,7 @@ def deidentify_dicom_files(data_row: DataRow) -> DataRow:
     return data_row
 
 
-def _count_dicom_files(data_row, session_key=None) -> int:
+def _count_dicom_files(data_row: DataRow, session_key=None) -> int:
     """Counts the number of dicom files in a data row.
     If session_key is None, it counts the number of dicom files in all sessions.
 

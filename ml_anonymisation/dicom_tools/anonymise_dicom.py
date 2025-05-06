@@ -1,4 +1,5 @@
 import os
+from typing import Tuple
 
 import pandas as pd
 import pydicom as dicom
@@ -9,10 +10,10 @@ from pydicom.pixel_data_handlers.util import apply_voi_lut
 from presidio_anonymizer.entities import OperatorConfig
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
 from presidio_analyzer.nlp_engine import NlpEngineProvider
-from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
+from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification, TokenClassificationPipeline
 
 
-def _build_presidio_analyser():
+def _build_presidio_analyser() -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
 
     This function initialises an NLP engine using the SpaCy library and sets up
@@ -237,7 +238,7 @@ def _build_presidio_analyser():
     return analyzer
 
 
-def _build_transformers():
+def _build_transformers() -> Tuple[TokenClassificationPipeline, TokenClassificationPipeline]:
     """Builds and returns named entity recognition (NER) pipelines for multilingual and profession-specific models.
 
     This function initializes two NER pipelines:
@@ -247,7 +248,7 @@ def _build_transformers():
     Returns
     -------
     tuple
-        A tuple containing two elements:
+        A tuple containing two Huggingface's TokenClassificationPipeline:
         - multilingual_nlp: The multilingual NER pipeline.
         - profession_nlp: The profession-specific NER pipeline.
     """
@@ -277,7 +278,7 @@ def _build_transformers():
     return multilingual_nlp, profession_nlp
 
 
-def _anonymise_with_transformer(pipe, text) -> str:
+def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
 
     This function processes the input text through the provided NER pipeline,
@@ -285,7 +286,7 @@ def _anonymise_with_transformer(pipe, text) -> str:
 
     Parameters
     ----------
-    pipe : pipeline
+    pipe : Huggingface's TokenClassificationPipeline
         The NER pipeline to use for entity recognition.
     
     text : str
@@ -306,7 +307,7 @@ def _anonymise_with_transformer(pipe, text) -> str:
     return text
 
 
-def anonymise_image(ds, score_threshold=0.5):
+def anonymise_image(ds: dicom.dataset.FileDataset, score_threshold: float=0.5) -> dicom.dataset.FileDataset:
     """Anonymizes a DICOM image by redacting personal information.
 
     This function processes the DICOM dataset, redacting personal names and other
@@ -315,7 +316,7 @@ def anonymise_image(ds, score_threshold=0.5):
 
     Parameters
     ----------
-    ds : pydicom.Dataset
+    ds : pydicom.dataset.FileDataset
         The DICOM dataset containing the image data and metadata to be anonymised.
     
     score_threshold : float, optional
@@ -324,7 +325,7 @@ def anonymise_image(ds, score_threshold=0.5):
 
     Returns
     -------
-    pydicom.Dataset
+    pydicom.dataset.FileDataset
         The anonymised DICOM.
     """
     engine = DicomImageRedactorEngine()
