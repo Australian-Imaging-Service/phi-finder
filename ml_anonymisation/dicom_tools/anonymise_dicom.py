@@ -12,7 +12,21 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification
 
 
-def _build_analyser():
+def _build_presidio_analyser():
+    """Builds and configures a Presidio analyser engine for named entity recognition.
+
+    This function initialises an NLP engine using the SpaCy library and sets up
+    various pattern recognisers for different types of entities, including titles,
+    correspondence, phone numbers, medical record numbers (MRN), provider numbers,
+    dates, street addresses, postcodes, suburbs, states, and institutes. The
+    recognisers are configured with specific patterns and deny lists.
+
+    Returns
+    -------
+    AnalyzerEngine
+        An instance of the AnalyzerEngine configured with various recognisers for
+        named entity recognition.
+    """
     configuration = {
         "nlp_engine_name": "spacy",
         "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
@@ -224,6 +238,19 @@ def _build_analyser():
 
 
 def _build_transformers():
+    """Builds and returns named entity recognition (NER) pipelines for multilingual and profession-specific models.
+
+    This function initializes two NER pipelines:
+    1. A multilingual NER pipeline using the "Babelscape/wikineural-multilingual-ner" model.
+    2. A profession-specific NER pipeline using the "BSC-NLP4BIA/prof-ner-cat-v1" model.
+
+    Returns
+    -------
+    tuple
+        A tuple containing two elements:
+        - multilingual_nlp: The multilingual NER pipeline.
+        - profession_nlp: The profession-specific NER pipeline.
+    """
     multilingual_tokenizer = AutoTokenizer.from_pretrained(
         "Babelscape/wikineural-multilingual-ner"
     )
@@ -251,6 +278,24 @@ def _build_transformers():
 
 
 def _anonymise_with_transformer(pipe, text) -> str:
+    """Anonymises text using a specified named entity recognition (NER) pipeline.
+
+    This function processes the input text through the provided NER pipeline,
+    replacing recognised entities of type "PER", "LOC", and "ORG" with the placeholder "[XXXX]".
+
+    Parameters
+    ----------
+    pipe : pipeline
+        The NER pipeline to use for entity recognition.
+    
+    text : str
+        The input text to be anonymised.
+
+    Returns
+    -------
+    str
+        The anonymised text with specified entities replaced by "[XXXX]".
+    """
     ner_results = pipe(text)
     for ner_result in ner_results:
         if ner_result["entity_group"] not in ["PER", "LOC", "ORG"]:
@@ -262,10 +307,30 @@ def _anonymise_with_transformer(pipe, text) -> str:
 
 
 def anonymise_image(ds, score_threshold=0.5):
+    """Anonymizes a DICOM image by redacting personal information.
+
+    This function processes the DICOM dataset, redacting personal names and other
+    identifiable information based on the specified score threshold. It utilises
+    named entity recognition pipelines to identify and replace sensitive information.
+
+    Parameters
+    ----------
+    ds : pydicom.Dataset
+        The DICOM dataset containing the image data and metadata to be anonymised.
+    
+    score_threshold : float, optional
+        The score threshold for entity recognition. Entities with a score below this
+        threshold will not be considered for anonymisation. Default is 0.5.
+
+    Returns
+    -------
+    pydicom.Dataset
+        The anonymised DICOM.
+    """
     engine = DicomImageRedactorEngine()
     # ds = engine.redact(ds, fill="contrast")  # fill="background")
 
-    analyser = _build_analyser()
+    analyser = _build_presidio_analyser()
     anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     multilingual_nlp, profession_nlp = _build_transformers()
