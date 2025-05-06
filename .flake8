@@ -7,7 +7,7 @@ exclude =
     docs/sphinxext/
     docs/tools/
     docs/conf.py
-    ml_anonymisation/_version.py
+    phi_finder/_version.py
     docs/source/conf.py
 max-line-length = 88
 select = C,E,F,W,B,B950

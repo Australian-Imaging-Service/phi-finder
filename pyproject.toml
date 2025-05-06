@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ml-anonymisation"
+name = "phi-finder"
 description = "Collection of tools to check uploaded scans and records for identifiable data."
 readme = "README.md"
 version = "2025.5.0"
@@ -83,25 +83,25 @@ docs = [
 ]
 
 [project.urls]
-repository = "https://github.com/Australian-Imaging-Service/ml-anonymisation"
+repository = "https://github.com/Australian-Imaging-Service/phi-finder"
 
 
 [tool.hatch.version]
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-version-file = "ml_anonymisation/_version.py"
+version-file = "phi_finder/_version.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ml_anonymisation"]
+packages = ["phi_finder"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.hatch.build]
-packages = ["ml_anonymisation"]
+packages = ["phi_finder"]
 exclude = ["tests"]
-include = ["./ml_anonymisation"]
+include = ["./phi_finder"]
 
 [tool.mypy]
 python_version = "3.11"
@@ -115,7 +115,7 @@ exclude = [
     "docs",
     "build",
     "dist",
-    "ml_anonymisation/_version.py",
+    "phi_finder/_version.py",
 ]
 
 [tool.codespell]

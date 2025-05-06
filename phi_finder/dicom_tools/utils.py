@@ -3,7 +3,7 @@ from frametree.core.row import DataRow
 from fileformats.medimage.dicom import DicomSeries
 import pydicom
 
-from ml_anonymisation.dicom_tools import anonymise_dicom
+from phi_finder.dicom_tools import anonymise_dicom
 
 
 def deidentify_dicom_files(data_row: DataRow) -> DataRow:
