@@ -88,7 +88,7 @@ def _count_dicom_files(data_row: DataRow, resource_path: str | None = None) -> i
         """
         try:
             dicom_series = data_row.entry(session_key).item
-        except KeyError:
+        except:
             print(f"Nothing found in data row {session_key}.")
             return 0
 
