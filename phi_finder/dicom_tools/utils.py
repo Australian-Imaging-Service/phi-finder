@@ -6,14 +6,14 @@ import pydicom
 from phi_finder.dicom_tools import anonymise_dicom
 
 
-def deidentify_dicom_files(data_row: DataRow) -> DataRow:
+def deidentify_dicom_files(data_row: DataRow) -> None:
     """Main function to deidentify dicom files in a data row.
         1. Download the files from the original scan entry fmap/DICOM
         2. Anonymise those files and store the anonymised files in a temp dir
         3. Create the deidentified entry using deid_entry = create_entry(...)
         4. Create  a new DicomSeries object from the anonymised files dicom_series = DicomSeries('anonymised-tmp/1.dcm', ...)
         5. Upload the anonymised files from the temp dir with deid_entry.item = dicom_series
-    
+
     Parameters
     ----------
     data_row : DataRow
@@ -24,14 +24,18 @@ def deidentify_dicom_files(data_row: DataRow) -> DataRow:
     data_row : DataRow
         The DataRow containing the original and anonymised DICOM files.
     """
-    session_keys = list(data_row.entries_dict.keys())  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
-    for session_key in session_keys:
-        # 1. Downloading the files from the original scan entry.
-        try:
-            dicom_series = data_row.entry(session_key).item
-        except:
-            print(f"Nothing found in data row {session_key}.")
+    entries = list(data_row.entries_dict.items())
+    for resource_path, entry in entries:
+        # 0. Check if the entry is a DICOM series and not a derivative.
+        if entry.datatype != DicomSeries:
+            print(f"Skipping {resource_path} as it is not a DICOM series.")
             continue
+        if entry.is_derivative:
+            print(f"Skipping {resource_path} as it is a derivative.")
+            continue
+
+        # 1. Downloading the files from the original scan entry.
+        dicom_series = entry.item
 
         # 2. Anonymising those files.
         tmps_paths = []
@@ -43,18 +47,20 @@ def deidentify_dicom_files(data_row: DataRow) -> DataRow:
             tmps_paths.append(tmp_path)
 
         # 3. Creating the deidentified entry.
-        anonymised_session_key = session_key.replace("/DICOM", "@deidentified")
-        anonymised_session_entry = data_row.create_entry(anonymised_session_key, datatype=DicomSeries)
+        anonymised_resource_path = resource_path.replace("/DICOM", "@deidentified")
+        anonymised_session_entry = data_row.create_entry(
+            anonymised_resource_path, datatype=DicomSeries
+        )
 
         # 4. Creating a new DicomSeries object from the anonymised files.
         anonymised_dcm_series = DicomSeries(tmps_paths)
 
         # 5. Uploading the anonymised files from the temp dir.
         anonymised_session_entry.item = anonymised_dcm_series
-    return data_row
+    return None
 
 
-def _count_dicom_files(data_row: DataRow, session_key=None) -> int:
+def _count_dicom_files(data_row: DataRow, resource_path: str | None = None) -> int:
     """Counts the number of dicom files in a data row.
     If session_key is None, it counts the number of dicom files in all sessions.
 
@@ -62,7 +68,7 @@ def _count_dicom_files(data_row: DataRow, session_key=None) -> int:
     ----------
     data_row : DataRow
         The data row containing the DICOM files.
-    
+
     session_key : str, optional
         The session key for which to count the DICOM files. If None, counts for all sessions.
 
@@ -71,7 +77,8 @@ def _count_dicom_files(data_row: DataRow, session_key=None) -> int:
     int
         The number of DICOM files in the specified session or in all sessions if session_key is None.
     """
-    def _count_dicom_in_session(session_key: str) -> int:
+
+    def _count_dicom_in_session(session_key: str | None) -> int:
         """Helper function to list DICOM files in a specific session.
 
         Args:
@@ -88,14 +95,15 @@ def _count_dicom_files(data_row: DataRow, session_key=None) -> int:
 
         for i, dicom in enumerate(dicom_series.contents):
             print(i, dicom.absolute())
-        return i+1  # Returning the number of dicom files in the series.
+        return i + 1  # Returning the number of dicom files in the series.
 
-    if not session_key:
-        session_keys = list(data_row.entries_dict.keys())  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
+    if not resource_path:
+        session_keys = list(
+            data_row.entries_dict.keys()
+        )  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
         n_scans = 0
-        for session_key in session_keys:
-            n_scans += _count_dicom_in_session(session_key)
+        for resource_path in session_keys:
+            n_scans += _count_dicom_in_session(resource_path)
         return n_scans
     else:
-        return _count_dicom_in_session(session_key)
-    
+        return _count_dicom_in_session(resource_path)
