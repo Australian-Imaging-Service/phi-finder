@@ -12,7 +12,7 @@ def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
 def test_ingest_anonymised_dicom(data_row: DataRow):
     n_scans_before = utils._count_dicom_files(data_row, resource_path=None)
     assert n_scans_before == 6
-    data_row = utils.deidentify_dicom_files(data_row)
+    utils.deidentify_dicom_files(data_row)
     n_scans_after = utils._count_dicom_files(data_row, resource_path=None)
     assert n_scans_after == 12
 

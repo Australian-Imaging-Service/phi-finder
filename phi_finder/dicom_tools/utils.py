@@ -24,7 +24,8 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
     data_row : DataRow
         The DataRow containing the original and anonymised DICOM files.
     """
-    for resource_path, entry in data_row.entries_dict.items():
+    entries = list(data_row.entries_dict.items())
+    for resource_path, entry in entries:
         # 0. Check if the entry is a DICOM series and not a derivative.
         if entry.datatype != DicomSeries:
             print(f"Skipping {resource_path} as it is not a DICOM series.")
