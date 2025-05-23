@@ -22,7 +22,7 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "pdfminer.six>=20240706",
                 "opencv-python>=4.10.0.84",
                 "transformers>=4.48.2",
-                "torch==2.3.0",
+                "torch==2.6.0",
                 "dicognito>=0.17.0",
                 "fileformats-medimage-extras",
 ]
