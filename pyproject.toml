@@ -9,7 +9,7 @@ readme = "README.md"
 version = "2025.5.0"
 requires-python = ">=3.11,<3.13"
 dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
-                "numpy",
+                "numpy==1.26.4",
                 "pandas>=2.2.3",
                 "faker>=36.1.1",
                 "presidio_structured>=0.0.4a0",
@@ -22,7 +22,7 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "pdfminer.six>=20240706",
                 "opencv-python>=4.10.0.84",
                 "transformers>=4.48.2",
-                "torch",
+                "torch==2.2.2",
                 "dicognito>=0.17.0",
                 "fileformats-medimage-extras",
 ]
