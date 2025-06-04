@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "phi-finder"
 description = "Collection of tools to check uploaded scans and records for identifiable data."
 readme = "README.md"
-version = "2025.5.3"
+version = "2025.6.0"
 requires-python = ">=3.11,<3.13"
 dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "numpy==1.26.4",
@@ -63,8 +63,13 @@ test = [
     "pytest-env>=0.6.2",
     "pytest-cov>=2.12.1",
     "pydra==1.0a1",
+    "frametree>=0.14.5",
     "frametree-xnat >=0.6.4",
     "xnat4tests",
+    "pydra2app>=0.18.5",
+    "pydra2app-xnat>=0.8.0",
+    "thinc>=8.3.4",
+    "openpyxl",
     "medimages4tests",
     "fileformats-extras",
     "fileformats-medimage-extras",
