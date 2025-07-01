@@ -1,6 +1,7 @@
 import os
 from typing import Tuple
 
+import numpy as np
 import pandas as pd
 import pydicom as dicom
 
@@ -29,7 +30,9 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
     if "PixelData" in ds:
         pixel_array = ds.pixel_array
         pixel_array[:] = 0
-        ds.PixelData = pixel_array.tobytes()
+        data_downsampling = pixel_array[:8, :8]
+        ds.PixelData = data_downsampling.tobytes()
+        ds.Rows, ds.Columns = data_downsampling.shape
     return ds
 
 

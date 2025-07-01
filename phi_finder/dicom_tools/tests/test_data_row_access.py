@@ -19,8 +19,10 @@ def test_ingest_anonymised_dicom(data_row: DataRow):
     assert n_scans_after == 12
     for dicom_file in dicom_files[0:6]:
         assert np.any(dicom_file != 0)
+        assert dicom_file.shape != (8, 8)
     for dicom_file in dicom_files[6:]:
         assert np.all(dicom_file == 0)  # Check if pixel data is destroyed
+        assert dicom_file.shape == (8, 8)
 
 
 def test_create_empty_entry(data_row: DataRow):
