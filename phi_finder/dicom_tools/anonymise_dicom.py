@@ -13,6 +13,26 @@ from presidio_analyzer.nlp_engine import NlpEngineProvider
 from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification, TokenClassificationPipeline
 
 
+def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
+    """It sets all pixel values to 0.
+
+    Parameters
+    ----------
+    ds : pydicom.dataset.FileDataset
+        The DICOM dataset containing the image data to be destroyed.
+
+    Returns
+    -------
+    pydicom.dataset.FileDataset
+        The modified DICOM dataset with pixel data destroyed.
+    """
+    if "PixelData" in ds:
+        pixel_array = ds.pixel_array
+        pixel_array[:] = 0
+        ds.PixelData = pixel_array.tobytes()
+    return ds
+
+
 def _build_presidio_analyser() -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
 

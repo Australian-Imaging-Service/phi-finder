@@ -6,7 +6,7 @@ import pydicom
 from phi_finder.dicom_tools import anonymise_dicom
 
 
-def deidentify_dicom_files(data_row: DataRow) -> None:
+def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None:
     """Main function to deidentify dicom files in a data row.
         1. Download the files from the original scan entry fmap/DICOM
         2. Anonymise those files and store the anonymised files in a temp dir
@@ -42,6 +42,8 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
         for i, dicom in enumerate(dicom_series.contents):
             dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
+            if destroy_pixels:
+               anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
             tmp_path = Path(f"anonymised{i}-tmp_{dicom.stem}.dcm")
             anonymised_dcm.save_as(tmp_path)
             tmps_paths.append(tmp_path)
@@ -58,6 +60,37 @@ def deidentify_dicom_files(data_row: DataRow) -> None:
         # 5. Uploading the anonymised files from the temp dir.
         anonymised_session_entry.item = anonymised_dcm_series
     return None
+
+
+def _get_dicom_files(data_row: DataRow) -> list:
+    """Returns a list of DICOM files in a data row.
+    If session_key is None, it returns the DICOM files in all sessions.
+
+    Parameters
+    ----------
+    data_row : DataRow
+        The data row containing the DICOM files.
+
+    Returns
+    -------
+    list[pixel_array]
+        A list of pixel arrays of the DICOM images.
+    """
+    def _get_dicom_in_session(session_key: str | None):
+        try:
+            dicom_series = data_row.entry(session_key).item
+            paths = dicom_series.contents
+            pixel_arrays = [pydicom.dcmread(path).pixel_array for path in paths]
+        except:
+            print(f"Nothing found in data row {session_key}.")
+            return 0
+        return pixel_arrays
+
+    resource_paths = list(data_row.entries_dict.keys())
+    dicom_files = []
+    for resource_path in resource_paths:
+        dicom_files.extend(_get_dicom_in_session(resource_path))
+    return dicom_files
 
 
 def _count_dicom_files(data_row: DataRow, resource_path: str | None = None) -> int:
