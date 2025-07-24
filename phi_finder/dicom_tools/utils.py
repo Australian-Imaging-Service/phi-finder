@@ -33,6 +33,10 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
         if entry.is_derivative:
             print(f"Skipping {resource_path} as it is a derivative.")
             continue
+        anonymised_resource_path = resource_path.replace("/DICOM", "@deidentified")
+        if anonymised_resource_path in [x[0] for x in entries]:  # x: (name: str, entry: DataEntry)
+            print(f"Skipping {resource_path} as it is already anonymised.")
+            continue
 
         # 1. Downloading the files from the original scan entry.
         dicom_series = entry.item
@@ -49,7 +53,6 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
             tmps_paths.append(tmp_path)
 
         # 3. Creating the deidentified entry.
-        anonymised_resource_path = resource_path.replace("/DICOM", "@deidentified")
         anonymised_session_entry = data_row.create_entry(
             anonymised_resource_path, datatype=DicomSeries
         )

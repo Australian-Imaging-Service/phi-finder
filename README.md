@@ -10,7 +10,7 @@ python -m pip install --upgrade build
 
 python -m build
 
-pip install dist/phi_finder-2025.7.1-py3-none-any.whl
+pip install dist/phi_finder-2025.7.2-py3-none-any.whl
 ```
 
 ## (Very) Basic usage
