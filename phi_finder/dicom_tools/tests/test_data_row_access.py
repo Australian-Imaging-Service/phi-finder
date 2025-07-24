@@ -24,6 +24,12 @@ def test_ingest_anonymised_dicom(data_row: DataRow):
         assert np.all(dicom_file == 0)  # Check if pixel data is destroyed
         assert dicom_file.shape == (8, 8)
 
+    # Running again to ensure it does not duplicate entries.
+    utils.deidentify_dicom_files(data_row, destroy_pixels=True)
+    n_scans_after = utils._count_dicom_files(data_row, resource_path=None)
+    dicom_files = utils._get_dicom_files(data_row)
+    assert n_scans_after == 12
+
 
 def test_create_empty_entry(data_row: DataRow):
     # docker stop $(docker ps -aq); docker rm $(docker ps -aq)
