@@ -6,7 +6,10 @@ import pydicom
 from phi_finder.dicom_tools import anonymise_dicom
 
 
-def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None:
+def deidentify_dicom_files(data_row: DataRow,
+                           score_threshold: float=0.5,
+                           destroy_pixels: bool=True,
+                           use_transformers: bool=False) -> None:
     """Main function to deidentify dicom files in a data row.
         1. Download the files from the original scan entry fmap/DICOM
         2. Anonymise those files and store the anonymised files in a temp dir
@@ -19,10 +22,19 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
     data_row : DataRow
         The data row containing the DICOM files to be deidentified.
 
+    score_threshold : float, optional (default 0.5)
+        The score threshold for entity recognition. Entities with a score below this
+        threshold will not be considered for anonymisation.
+    
+    destroy_pixels : bool, optional (default True)
+        If True, the pixel data in the DICOM files will be a small black matrix.
+
+    use_transformers : bool, optional (default False)
+        If True, transformers will be used for anonymisation on top of Presidio's output.
+
     Returns
     -------
-    data_row : DataRow
-        The DataRow containing the original and anonymised DICOM files.
+    data_row : None
     """
     entries = list(data_row.entries_dict.items())
     for resource_path, entry in entries:
@@ -38,6 +50,7 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
             print(f"Skipping {resource_path} as it is already anonymised.")
             continue
 
+        print(f"De-identifying {resource_path} to {anonymised_resource_path}.")
         # 1. Downloading the files from the original scan entry.
         dicom_series = entry.item
 
@@ -45,7 +58,9 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
         tmps_paths = []
         for i, dicom in enumerate(dicom_series.contents):
             dcm = pydicom.dcmread(dicom)
-            anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
+            anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
+                                                             score_threshold=score_threshold,
+                                                             use_transformers=use_transformers)
             if destroy_pixels:
                anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
             tmp_path = Path(f"anonymised{i}-tmp_{dicom.stem}.dcm")
