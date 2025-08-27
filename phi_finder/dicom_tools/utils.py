@@ -18,11 +18,13 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
     ----------
     data_row : DataRow
         The data row containing the DICOM files to be deidentified.
+    
+    destroy_pixels : bool, optional
+        If True, the pixel data in the DICOM files will be a small black matrix.
 
     Returns
     -------
-    data_row : DataRow
-        The DataRow containing the original and anonymised DICOM files.
+    data_row : None
     """
     entries = list(data_row.entries_dict.items())
     for resource_path, entry in entries:
@@ -38,6 +40,7 @@ def deidentify_dicom_files(data_row: DataRow, destroy_pixels: bool=True) -> None
             print(f"Skipping {resource_path} as it is already anonymised.")
             continue
 
+        print(f"De-identifying {resource_path} to {anonymised_resource_path}.")
         # 1. Downloading the files from the original scan entry.
         dicom_series = entry.item
 
