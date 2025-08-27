@@ -330,7 +330,9 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
     return text
 
 
-def anonymise_image(ds: dicom.dataset.FileDataset, score_threshold: float=0.5) -> dicom.dataset.FileDataset:
+def anonymise_image(ds: dicom.dataset.FileDataset,
+                    score_threshold: float=0.5,
+                    use_transformers: bool=False) -> dicom.dataset.FileDataset:
     """Anonymizes a DICOM image by redacting personal information.
 
     This function processes the DICOM dataset, redacting personal names and other
@@ -346,6 +348,9 @@ def anonymise_image(ds: dicom.dataset.FileDataset, score_threshold: float=0.5) -
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation. Default is 0.5.
 
+    use_transformers : bool, optional (default False)
+        If True, transformers will be used for anonymisation on top of Presidio's output.
+
     Returns
     -------
     pydicom.dataset.FileDataset
@@ -353,11 +358,11 @@ def anonymise_image(ds: dicom.dataset.FileDataset, score_threshold: float=0.5) -
     """
     engine = DicomImageRedactorEngine()
     # ds = engine.redact(ds, fill="contrast")  # fill="background")
-
     analyser = _build_presidio_analyser()
     anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
-    multilingual_nlp, profession_nlp = _build_transformers()
+    if use_transformers:
+        multilingual_nlp, profession_nlp = _build_transformers()
     for element in ds.elements():
         elem = ds[element.tag]
         if elem.VR == "PN":
@@ -382,13 +387,14 @@ def anonymise_image(ds: dicom.dataset.FileDataset, score_threshold: float=0.5) -
                         "DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})
                     },
                 ).text
-                anonymized_text = _anonymise_with_transformer(
-                    multilingual_nlp, anonymized_text
-                )
-                anonymized_text = _anonymise_with_transformer(
-                    profession_nlp, anonymized_text
-                )
+                if use_transformers:
+                    anonymized_text = _anonymise_with_transformer(
+                        multilingual_nlp, anonymized_text
+                    )
+                    anonymized_text = _anonymise_with_transformer(
+                        profession_nlp, anonymized_text
+                    )
                 elem.value = anonymized_text
             except:
-                print(elem.tag)
+                print(elem.tag)  # pixel data falls here.
     return ds
