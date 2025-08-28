@@ -32,9 +32,6 @@ def deidentify_dicom_files(data_row: DataRow,
     use_transformers : bool, optional (default False)
         If True, transformers will be used for anonymisation on top of Presidio's output.
 
-    Returns
-    -------
-    data_row : None
     """
     entries = list(data_row.entries_dict.items())
     for resource_path, entry in entries:
