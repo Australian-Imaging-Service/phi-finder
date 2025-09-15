@@ -37,3 +37,12 @@ def test_create_empty_entry(data_row: DataRow):
     anonymised_key = key.replace("/DICOM", "@deidentified_empty")
     data_row.create_entry(anonymised_key, datatype=utils.DicomSeries)
     assert 0 == utils._count_dicom_files(data_row, resource_path=anonymised_key)
+
+
+def test_debug_field_dump(data_row: DataRow) -> None:
+    with data_row.frameset.store.connection:
+        xsession = data_row.frameset.store.connection.session.projects[
+            data_row.frameset.id
+        ].experiments[data_row.id]
+        xsession.fields["debug-dump"] = "test debug data"
+        assert xsession.fields["debug-dump"] == "test debug data"
