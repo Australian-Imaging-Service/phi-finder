@@ -36,7 +36,7 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
     return ds
 
 
-def _build_presidio_analyser() -> AnalyzerEngine:
+def _build_presidio_analyser(score_threshold: float=0.5) -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
 
     This function initialises an NLP engine using the SpaCy library and sets up
@@ -45,6 +45,12 @@ def _build_presidio_analyser() -> AnalyzerEngine:
     dates, street addresses, postcodes, suburbs, states, and institutes. The
     recognisers are configured with specific patterns and deny lists.
 
+    Parameters
+    ----------
+    score_threshold : float, optional
+        The score threshold for entity recognition. Entities with a score below this
+        threshold will not be considered for anonymisation. Default is 0.5.
+        
     Returns
     -------
     AnalyzerEngine
@@ -53,7 +59,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
     """
     configuration = {
         "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}],
+        "models": [{"lang_code": "en", "model_name": "en_core_web_md"}],
     }
     provider = NlpEngineProvider(nlp_configuration=configuration)
     nlp_engine = provider.create_engine()
@@ -85,16 +91,16 @@ def _build_presidio_analyser() -> AnalyzerEngine:
     correspondence_recognizer = PatternRecognizer(
         supported_entity="CORRESPONDENCE",
         patterns=[
-            Pattern(name="correspondence", regex=r"Dear(\s+)(\w+)(\s+)(\w+)", score=0.5)
+            Pattern(name="correspondence", regex=r"Dear(\s+)(\w+)(\s+)(\w+)", score=score_threshold)
         ],
-    )  # default is 0.5, a lower score increases likelihood of capturing the entity but decreases the confidence
+    )  # A lower score increases likelihood of capturing the entity but decreases the confidence
     phone_recognizer = PatternRecognizer(
         supported_entity="PHONE",
         patterns=[
             Pattern(
                 name="phone",
                 regex=r"(\(+61\)|\+61|\(0[1-9]\)|0[1-9])?( ?-?[0-9]){8,14}",  # 8 to 14 digits
-                score=0.5,
+                score=score_threshold,
             )
         ],
     )
@@ -104,7 +110,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
             Pattern(
                 name="mrn",
                 regex=r"\d{5,9}",  # for numbers between 5-9 digits long
-                score=0.5,
+                score=score_threshold,
             )
         ],
     )
@@ -114,7 +120,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
             Pattern(
                 name="provider number",
                 regex=r"(\d+(Y))|(\d+(X)|(?:(Provider Number:)+\s+(\d+|\w+)))",
-                score=0.5,
+                score=score_threshold,
             )
         ],
     )
@@ -124,7 +130,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
             Pattern(
                 name="date",
                 regex=r"([0-9]{1,2}(\/|-|.)[0-9]{1,2}(\/|-|.)[0-9]{2,4})|(\b\d{1,2}\D{0,3})?\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|(Nov|Dec)(?:ember)?)\D?(\d{1,2}\D?)?\D?((19[7-9]\d|20\d{2})|\d{2})",
-                score=0.5,
+                score=score_threshold,
             )
         ],
     )
@@ -134,7 +140,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
             Pattern(
                 name="street",
                 regex=r"((\w+\s(?:Alley|Ally|Arcade|Arc|Avenue|Ave|Boulevard|Bvd|Bypass|Bypa|Circuit|CCt|Close|Corner|Crn|Court|Crescent|Cres|Cul-de-sac|Cds|Drive|Esplanade|Esp|Green|Grn|Grove|Highway|Hwy|Junction|Jnc|Lane|Link|Mews|Parade|Pde|Place|Ridge|Rdge|Road|Rd|Square|Street|Terrace|Tce|ALLEY|ALLY|ARCADE|ARC|AVENUE|AVE|BOULEVARD|BVD|BYPASS|BYPA|CIRCUIT|CCT|CLOSE|CORNER|CRN|COURT|CRESCENT|CRES|CUL-DE-SAC|CDS|DRIVE|ESPLANADE|ESP|GREEN|GRN|GROVE|HIGHWAY|HWY|JUNCTION|JNC|LANE|LINK|MEWS|PARADE|PDE|PLACE|RIDGE|RDGE|ROAD|RD|SQUARE|STREET|TERRACE|TCE))|(\d+\s+\w+\s(?:Alley|Ally|Arcade|Arc|Avenue|Ave|Boulevard|Bvd|Bypass|Bypa|Circuit|CCt|Close|Corner|Crn|Court|Crescent|Cres|Cul-de-sac|Cds|Drive|Esplanade|Esp|Green|Grn|Grove|Highway|Hwy|Junction|Jnc|Lane|Link|Mews|Parade|Pde|Place|Ridge|Rdge|Road|Rd|Square|Street|Terrace|Tce))|(\d+\s+\w+\s(?:Alley|Ally|Arcade|Arc|Avenue|Ave|Boulevard|Bvd|Bypass|Bypa|Circuit|CCt|Close|Corner|Crn|Court|Crescent|Cres|Cul-de-sac|Cds|Drive|Esplanade|Esp|Green|Grn|Grove|Highway|Hwy|Junction|Jnc|Lane|Link|Mews|Parade|Pde|Place|Ridge|Rdge|Road|Rd|Square|Street|Terrace|Tce|ALLEY|ALLY|ARCADE|ARC|AVENUE|AVE|BOULEVARD|BVD|BYPASS|BYPA|CIRCUIT|CCT|CLOSE|CORNER|CRN|COURT|CRESCENT|CRES|CUL-DE-SAC|CDS|DRIVE|ESPLANADE|ESP|GREEN|GRN|GROVE|HIGHWAY|HWY|JUNCTION|JNC|LANE|LINK|MEWS|PARADE|PDE|PLACE|RIDGE|RDGE|ROAD|RD|SQUARE|STREET|TERRACE|TCE))|(\D+\S+\W+\S(?:ALLEY|ALLY|ARCADE|ARC|AVENUE|AVE|BOULEVARD|BVD|BYPASS|BYPA|CIRCUIT|CCT|CLOSE|CORNER|CRN|COURT|CRESCENT|CRES|CUL-DE-SAC|CDS|DRIVE|ESPLANADE|ESP|GREEN|GRN|GROVE|HIGHWAY|HWY|JUNCTION|JNC|LANE|LINK|MEWS|PARADE|PDE|PLACE|RIDGE|RDGE|ROAD|RD|SQUARE|STREET|TERRACE|TCE)(\s+\w+\s)(?:New South Wales|Victoria|Queensland|Western Australia|South Australia|Tasmania|Australian Capital Territory|Northern Territory|NEW SOUTH WALES|VICTORIA|QUEENSLAND|WESTERN AUSTRALIA|SOUTH AUSTRALIA|TASMANIA|AUSTRALIAN CAPITAL TERRITORY|NORTHERN TERRITORY|NSW|VIC|QLD|WA|SA|TAS|ACT|NT)(\s+\d{4})))",
-                score=0.5,
+                score=score_threshold,
             )
         ],
     )
@@ -144,7 +150,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
             Pattern(
                 name="postcode",
                 regex=r"\d{4}",  # for numbers between 4 digits long
-                score=0.5,
+                score=score_threshold,
             )
         ],
     )
@@ -196,7 +202,7 @@ def _build_presidio_analyser() -> AnalyzerEngine:
             Pattern(
                 name="institute",
                 regex=r"(\w+\s(Medical Centre|Cancer Centre|Medical Practice))",
-                score=0.5,
+                score=score_threshold,
             )
         ],
         deny_list=[
@@ -358,7 +364,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     """
     engine = DicomImageRedactorEngine()
     # ds = engine.redact(ds, fill="contrast")  # fill="background")
-    analyser = _build_presidio_analyser()
+    analyser = _build_presidio_analyser(score_threshold)
     anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     if use_transformers:
