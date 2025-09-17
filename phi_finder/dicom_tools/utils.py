@@ -82,10 +82,6 @@ def deidentify_dicom_files(data_row: DataRow,
             _log_session(data_row, "debug-dump1", f"Skipping {resource_path} as it is a derivative.")
             continue
         anonymised_resource_path = str(order_key) + '_' + resource_path.replace("/DICOM", "@deidentified")
-        if anonymised_resource_path in [x[0][0] for x in entries]:  # x: ((name: str, order_key: str), entry: DataEntry)
-            print(f"Skipping {resource_path} as it is already anonymised.")
-            _log_session(data_row, "debug-dump1", f"Skipping {resource_path} as it is already anonymised.")
-            continue
 
         print(f"De-identifying {resource_path} to {anonymised_resource_path}.")
         _log_session(data_row, "debug-dump2", f"De-identifying {resource_path} to {anonymised_resource_path}.")
@@ -108,11 +104,18 @@ def deidentify_dicom_files(data_row: DataRow,
             tmps_paths.append(tmp_path)
         _log_session(data_row, "debug-dump4", f"Files anonymised.")
 
-        # 3. Creating the deidentified entry.
-        anonymised_session_entry = data_row.create_entry(
-            anonymised_resource_path, datatype=DicomSeries, order_key=order_key
-        )
-        _log_session(data_row, "debug-dump5", f"Deidentified entry created.")
+        # 3. Creating the deidentified entry if necessary.
+        entries_names = [x[0][0] for x in entries]  # x: ((name: str, order_key: str), entry: DataEntry)
+        if anonymised_resource_path in entries_names:
+            print(f"Re-using {resource_path} that already exists.")
+            _log_session(data_row, "debug-dump5", f"Re-using {resource_path} that already exists.")
+            index = entries_names.index(anonymised_resource_path)
+            anonymised_session_entry = entries[index][1]
+        else:
+            anonymised_session_entry = data_row.create_entry(
+                anonymised_resource_path, datatype=DicomSeries, order_key=order_key
+            )
+            _log_session(data_row, "debug-dump5", f"Deidentified entry created.")
 
         # 4. Creating a new DicomSeries object from the anonymised files.
         anonymised_dcm_series = DicomSeries(tmps_paths)
@@ -198,7 +201,7 @@ def _count_dicom_files(data_row: DataRow, resource_path: str | None = None) -> i
             data_row.entries_dict.keys()
         )  # Copy, not reference, of the keys, e.g. [('fmap/DICOM', '1'), ('t1w/DICOM', '1'), ('dwi/DICOM', '1')]
         n_scans = 0
-        session_keys = [x[0][0] if isinstance(x, tuple) else x for x in session_keys]
+        session_keys = [x[0] if isinstance(x, tuple) else x for x in session_keys]
         for resource_path in session_keys:
             n_scans += _count_dicom_in_session(resource_path)
         return n_scans
