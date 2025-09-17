@@ -107,8 +107,8 @@ def deidentify_dicom_files(data_row: DataRow,
         # 3. Creating the deidentified entry if necessary.
         entries_names = [x[0][0] for x in entries]  # x: ((name: str, order_key: str), entry: DataEntry)
         if anonymised_resource_path in entries_names:
-            print(f"Re-using {resource_path} that already exists.")
-            _log_session(data_row, "debug-dump5", f"Re-using {resource_path} that already exists.")
+            print(f"Re-using {anonymised_resource_path} that already exists.")
+            _log_session(data_row, "debug-dump5", f"Re-using {anonymised_resource_path} that already exists.")
             index = entries_names.index(anonymised_resource_path)
             anonymised_session_entry = entries[index][1]
         else:
