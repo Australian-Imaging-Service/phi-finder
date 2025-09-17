@@ -69,7 +69,9 @@ def deidentify_dicom_files(data_row: DataRow,
     _log_session(data_row, "debug-dump0", "Pipeline started")
 
     entries = list(data_row.entries_dict.items())
-    for resource_path, entry in entries:
+    for resource_path_key_order, entry in entries:
+        resource_path = resource_path_key_order[0]
+        order_key = resource_path_key_order[1]
         # 0. Check if the entry is a DICOM series and not a derivative.
         if entry.datatype != DicomSeries:
             print(f"Skipping {resource_path} as it is not a DICOM series.")
@@ -79,8 +81,8 @@ def deidentify_dicom_files(data_row: DataRow,
             print(f"Skipping {resource_path} as it is a derivative.")
             _log_session(data_row, "debug-dump1", f"Skipping {resource_path} as it is a derivative.")
             continue
-        anonymised_resource_path = resource_path.replace("/DICOM", "@deidentified")
-        if anonymised_resource_path in [x[0] for x in entries]:  # x: (name: str, entry: DataEntry)
+        anonymised_resource_path = str(order_key) + '_' + resource_path.replace("/DICOM", "@deidentified")
+        if anonymised_resource_path in [x[0][0] for x in entries]:  # x: ((name: str, order_key: str), entry: DataEntry)
             print(f"Skipping {resource_path} as it is already anonymised.")
             _log_session(data_row, "debug-dump1", f"Skipping {resource_path} as it is already anonymised.")
             continue
@@ -91,7 +93,6 @@ def deidentify_dicom_files(data_row: DataRow,
         # 1. Downloading the files from the original scan entry.
         dicom_series = entry.item
         _log_session(data_row, "debug-dump3", f"Files from the original scan entry were downloaded.")
-            
 
         # 2. Anonymising those files.
         tmps_paths = []
@@ -109,7 +110,7 @@ def deidentify_dicom_files(data_row: DataRow,
 
         # 3. Creating the deidentified entry.
         anonymised_session_entry = data_row.create_entry(
-            anonymised_resource_path, datatype=DicomSeries
+            anonymised_resource_path, datatype=DicomSeries, order_key=order_key
         )
         _log_session(data_row, "debug-dump5", f"Deidentified entry created.")
 
@@ -148,6 +149,7 @@ def _get_dicom_files(data_row: DataRow) -> list:
         return pixel_arrays
 
     resource_paths = list(data_row.entries_dict.keys())
+    resource_paths = [x[0] if isinstance(x, tuple) else x for x in resource_paths]
     dicom_files = []
     for resource_path in resource_paths:
         dicom_files.extend(_get_dicom_in_session(resource_path))
@@ -194,8 +196,9 @@ def _count_dicom_files(data_row: DataRow, resource_path: str | None = None) -> i
     if not resource_path:
         session_keys = list(
             data_row.entries_dict.keys()
-        )  # Copy, not reference, of the keys, e.g. ['fmap/DICOM', 't1w/DICOM', 'dwi/DICOM']
+        )  # Copy, not reference, of the keys, e.g. [('fmap/DICOM', '1'), ('t1w/DICOM', '1'), ('dwi/DICOM', '1')]
         n_scans = 0
+        session_keys = [x[0][0] if isinstance(x, tuple) else x for x in session_keys]
         for resource_path in session_keys:
             n_scans += _count_dicom_in_session(resource_path)
         return n_scans
