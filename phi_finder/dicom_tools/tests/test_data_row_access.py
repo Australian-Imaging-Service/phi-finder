@@ -31,6 +31,21 @@ def test_ingest_anonymised_dicom(data_row: DataRow):
     assert n_scans_after == 12
 
 
+def test_dry_run(data_row: DataRow):
+    n_scans_before = utils._count_dicom_files(data_row, resource_path=None)
+    assert n_scans_before == 6
+    utils.deidentify_dicom_files(data_row,
+                                 destroy_pixels=True,
+                                 use_transformers=False,
+                                 dry_run=True)
+    n_scans_after = utils._count_dicom_files(data_row, resource_path=None)
+    dicom_files = utils._get_dicom_files(data_row)
+    assert n_scans_after == 6
+    for dicom_file in dicom_files[0:6]:
+        assert np.any(dicom_file != 0)
+        assert dicom_file.shape != (8, 8)
+
+
 def test_create_empty_entry(data_row: DataRow):
     # docker stop $(docker ps -aq); docker rm $(docker ps -aq)
     key = "fmap/DICOM"
