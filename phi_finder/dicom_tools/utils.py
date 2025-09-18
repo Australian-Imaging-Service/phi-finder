@@ -36,7 +36,8 @@ def _log_session(data_row: DataRow, key: str, message: str) -> None:
 def deidentify_dicom_files(data_row: DataRow,
                            score_threshold: float=0.5,
                            destroy_pixels: bool=True,
-                           use_transformers: bool=False) -> None:
+                           use_transformers: bool=False,
+                           dry_run: bool=False) -> None:
     """Main function to deidentify dicom files in a data row.
         1. Download the files from the original scan entry fmap/DICOM
         2. Anonymise those files and store the anonymised files in a temp dir
@@ -59,7 +60,10 @@ def deidentify_dicom_files(data_row: DataRow,
     use_transformers : bool, optional (default False)
         If True, transformers will be used for anonymisation on top of Presidio's output.
 
-        
+    dry_run : bool, optional (default False)
+        If True, the function will not perform any changes, only log the actions that would be taken.
+        Note that original DICOM files will still be loaded.
+
     Returns
     -------
     None : None
@@ -93,6 +97,8 @@ def deidentify_dicom_files(data_row: DataRow,
         # 2. Anonymising those files.
         tmps_paths = []
         for i, dicom in enumerate(dicom_series.contents):
+            if dry_run:
+                continue
             dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
                                                              score_threshold=score_threshold,
@@ -102,10 +108,18 @@ def deidentify_dicom_files(data_row: DataRow,
             tmp_path = Path(f"anonymised{i}-tmp_{dicom.stem}.dcm")
             anonymised_dcm.save_as(tmp_path)
             tmps_paths.append(tmp_path)
-        _log_session(data_row, "debug-dump4", f"Files anonymised.")
+
+        if dry_run:
+            _log_session(data_row, "debug-dump4", f"Files anonymised (dry-run).")
+        else:
+            _log_session(data_row, "debug-dump4", f"Files anonymised.")
 
         # 3. Creating the deidentified entry if necessary.
         entries_names = [x[0][0] for x in entries]  # x: ((name: str, order_key: str), entry: DataEntry)
+        if dry_run:
+            _log_session(data_row, "debug-dump6", f"Deidentified files uploaded (dry-run).")
+            return
+
         if anonymised_resource_path in entries_names:
             print(f"Re-using {anonymised_resource_path} that already exists.")
             _log_session(data_row, "debug-dump5", f"Re-using {anonymised_resource_path} that already exists.")
