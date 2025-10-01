@@ -1,6 +1,9 @@
+import gc
 from pathlib import Path
+
 from frametree.core.row import DataRow
 from fileformats.medimage.dicom import DicomSeries
+from presidio_anonymizer import AnonymizerEngine
 import pydicom
 
 from phi_finder.dicom_tools import anonymise_dicom
@@ -35,6 +38,7 @@ def _log_session(data_row: DataRow, key: str, message: str) -> None:
 
 def deidentify_dicom_files(data_row: DataRow,
                            score_threshold: float=0.5,
+                           spacy_model_name: str="en_core_web_md",
                            destroy_pixels: bool=True,
                            use_transformers: bool=False,
                            dry_run: bool=False) -> None:
@@ -53,6 +57,10 @@ def deidentify_dicom_files(data_row: DataRow,
     score_threshold : float, optional (default 0.5)
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation.
+
+    spacy_model_name : str, optional (default "en_core_web_md")
+        The name of the SpaCy model to use for NLP processing.
+        Other options include "en_core_web_sm" and "en_core_web_lg".
     
     destroy_pixels : bool, optional (default True)
         If True, the pixel data in the DICOM files will be a small black matrix.
@@ -72,8 +80,12 @@ def deidentify_dicom_files(data_row: DataRow,
     """
     _log_session(data_row, "debug-dump0", "Pipeline started")
 
+    analyser = anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
+    anonymizer = AnonymizerEngine()
+
     entries = list(data_row.entries_dict.items())
     for resource_path_key_order, entry in entries:
+        gc.collect()
         resource_path = resource_path_key_order[0]
         order_key = resource_path_key_order[1]
         # 0. Check if the entry is a DICOM series and not a derivative.
@@ -97,10 +109,13 @@ def deidentify_dicom_files(data_row: DataRow,
         # 2. Anonymising those files.
         tmps_paths = []
         for i, dicom in enumerate(dicom_series.contents):
+            gc.collect()
             if dry_run:
                 continue
             dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
+                                                             analyser=analyser,
+                                                             anonymizer=anonymizer,
                                                              score_threshold=score_threshold,
                                                              use_transformers=use_transformers)
             if destroy_pixels:
@@ -137,7 +152,6 @@ def deidentify_dicom_files(data_row: DataRow,
         # 5. Uploading the anonymised files from the temp dir.
         anonymised_session_entry.item = anonymised_dcm_series
         _log_session(data_row, "debug-dump6", f"Deidentified files uploaded.")
-
     return None
 
 
