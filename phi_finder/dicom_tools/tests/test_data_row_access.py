@@ -13,7 +13,12 @@ def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
 def test_ingest_anonymised_dicom(data_row: DataRow):
     n_scans_before = utils._count_dicom_files(data_row, resource_path=None)
     assert n_scans_before == 6
-    utils.deidentify_dicom_files(data_row, destroy_pixels=True, use_transformers=False)
+    utils.deidentify_dicom_files(data_row,
+                                 score_threshold=0.5,
+                                 spacy_model_name="en_core_web_md",
+                                 destroy_pixels=True,
+                                 use_transformers=False,
+                                 dry_run=False)
     n_scans_after = utils._count_dicom_files(data_row, resource_path=None)
     dicom_files = utils._get_dicom_files(data_row)
     assert n_scans_after == 12
@@ -25,7 +30,12 @@ def test_ingest_anonymised_dicom(data_row: DataRow):
         assert dicom_file.shape == (8, 8)
 
     # Running again to ensure it does not duplicate entries.
-    utils.deidentify_dicom_files(data_row, destroy_pixels=True, use_transformers=False)
+    utils.deidentify_dicom_files(data_row,
+                                 score_threshold=0.5,
+                                 spacy_model_name="en_core_web_md",
+                                 destroy_pixels=True,
+                                 use_transformers=False,
+                                 dry_run=False)
     n_scans_after = utils._count_dicom_files(data_row, resource_path=None)
     dicom_files = utils._get_dicom_files(data_row)
     assert n_scans_after == 12
@@ -35,6 +45,8 @@ def test_dry_run(data_row: DataRow):
     n_scans_before = utils._count_dicom_files(data_row, resource_path=None)
     assert n_scans_before == 6
     utils.deidentify_dicom_files(data_row,
+                                 score_threshold=0.5,
+                                 spacy_model_name="en_core_web_md",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=True)

@@ -36,7 +36,8 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
     return ds
 
 
-def _build_presidio_analyser(score_threshold: float=0.5) -> AnalyzerEngine:
+def _build_presidio_analyser(score_threshold: float=0.5,
+                             spacy_model_name: str="en_core_web_md") -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
 
     This function initialises an NLP engine using the SpaCy library and sets up
@@ -50,6 +51,9 @@ def _build_presidio_analyser(score_threshold: float=0.5) -> AnalyzerEngine:
     score_threshold : float, optional
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation. Default is 0.5.
+    spacy_model_name : str, optional
+        The name of the SpaCy model to use for NLP processing. Default is "en_core_web_md".
+        Other options include "en_core_web_sm" and "en_core_web_lg".
         
     Returns
     -------
@@ -59,7 +63,7 @@ def _build_presidio_analyser(score_threshold: float=0.5) -> AnalyzerEngine:
     """
     configuration = {
         "nlp_engine_name": "spacy",
-        "models": [{"lang_code": "en", "model_name": "en_core_web_md"}],
+        "models": [{"lang_code": "en", "model_name": spacy_model_name}],
     }
     provider = NlpEngineProvider(nlp_configuration=configuration)
     nlp_engine = provider.create_engine()
@@ -337,9 +341,11 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
 
 
 def anonymise_image(ds: dicom.dataset.FileDataset,
+                    analyser: AnalyzerEngine=None,
+                    anonymizer: AnonymizerEngine=None,
                     score_threshold: float=0.5,
                     use_transformers: bool=False) -> dicom.dataset.FileDataset:
-    """Anonymizes a DICOM image by redacting personal information.
+    """Anonymises a DICOM image by redacting personal information.
 
     This function processes the DICOM dataset, redacting personal names and other
     identifiable information based on the specified score threshold. It utilises
@@ -362,10 +368,12 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     pydicom.dataset.FileDataset
         The anonymised DICOM.
     """
-    engine = DicomImageRedactorEngine()
+    #engine = DicomImageRedactorEngine()
     # ds = engine.redact(ds, fill="contrast")  # fill="background")
-    analyser = _build_presidio_analyser(score_threshold)
-    anonymizer = AnonymizerEngine()
+    if analyser is None:
+        analyser = _build_presidio_analyser(score_threshold)
+    if anonymizer is None:
+        anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     if use_transformers:
         multilingual_nlp, profession_nlp = _build_transformers()
