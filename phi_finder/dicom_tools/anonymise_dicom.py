@@ -393,14 +393,17 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         if elem.VR == "PN":
             elem.value = ["XXXX"]
         elif elem.VR in [
-            "LO",
-            "LT",
-            "OW",
-            "SH",
-            "ST",
-            "UC",
-            "UT",
-        ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1
+            "LO",  # Long String
+            "LT",  # Long Text
+            "OW",  # Other Word
+            "SH",  # Short String
+            "ST",  # Short Text
+            "UC",  # Unlimited Characters
+            "UT",  # Unlimited Text
+            "DA",  # Date
+            "CS",  # Code String
+            "AS",  # Age String
+        ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 analyzer_results = analyser.analyze(
                     text=elem.value, language="en", score_threshold=score_threshold

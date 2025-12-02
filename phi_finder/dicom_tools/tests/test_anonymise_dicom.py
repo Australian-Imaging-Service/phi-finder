@@ -1,10 +1,19 @@
 import pytest
+import pydicom
+from pydicom.data import get_testdata_files
 
 from phi_finder.dicom_tools import anonymise_dicom
 
 
 def test_destroy_pixels():
-    pass
+    filename = get_testdata_files("CT_small.dcm")[0]
+    dataset = pydicom.dcmread(filename)
+    assert "PixelData" in dataset
+    assert dataset.pixel_array.shape != (8, 8)
+    assert all(v != 0 for v in dataset.pixel_array.flatten())
+    anonymised_dataset = anonymise_dicom.destroy_pixels(dataset)
+    assert anonymised_dataset.pixel_array.shape == (8, 8)
+    assert all(v == 0 for v in anonymised_dataset.pixel_array.flatten())
 
 
 TEST_STRINGS_PII = ["John Doe",
