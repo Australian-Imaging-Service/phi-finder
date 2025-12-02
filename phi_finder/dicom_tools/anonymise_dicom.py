@@ -1,8 +1,6 @@
 import os
 from typing import Tuple
 
-import numpy as np
-import pandas as pd
 import pydicom as dicom
 
 from presidio_image_redactor import DicomImageRedactorEngine

@@ -3,6 +3,16 @@
 [![CI/CD](https://github.com/australian-imaging-service/phi-finder/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/australian-imaging-service/phi-finder/actions/workflows/ci-cd.yml)
 [![Codecov](https://codecov.io/gh/australian-imaging-service/phi-finder/branch/main/graph/badge.svg?token=UIS0OGPST7)](https://codecov.io/gh/australian-imaging-service/phi-finder)
 
+
+## Local testing (docker required)
+
+```bash
+conda create -n phi-finder python==3.11
+conda activate phi-finder
+pip install -e .[dev,test] --no-cache-dir
+pytest .
+```
+
 ## Building
 
 ```bash
@@ -10,10 +20,10 @@ python -m pip install --upgrade build
 
 python -m build
 
-pip install dist/phi_finder-0.1.7-py3-none-any.whl
+pip install dist/phi_finder-0.1.8-py3-none-any.whl
 ```
 
-## (Very) Basic usage
+## Basic usage
 
 ```python
 import pydicom as dicom
