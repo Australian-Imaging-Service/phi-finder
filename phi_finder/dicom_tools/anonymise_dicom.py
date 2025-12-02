@@ -118,6 +118,16 @@ def _build_presidio_analyser(score_threshold: float=0.5,
             )
         ],
     )
+    gender_recognizer = PatternRecognizer(
+        supported_entity="GENDER",
+        patterns=[
+            Pattern(
+                name="gender",
+                regex=r"(^[FfMm]$)|(^(?i)(male|female)$)",  # Sole string 'M' or 'F'
+                score=score_threshold,
+            )
+        ],
+    )
     providernumber_recognizer = PatternRecognizer(
         supported_entity="PROVIDER_NUMBER",
         patterns=[
@@ -262,6 +272,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
     analyzer.registry.add_recognizer(phone_recognizer)
     analyzer.registry.add_recognizer(mrn_recognizer)
     analyzer.registry.add_recognizer(providernumber_recognizer)
+    analyzer.registry.add_recognizer(gender_recognizer)
     analyzer.registry.add_recognizer(date_recognizer)
     analyzer.registry.add_recognizer(street_recognizer)
     analyzer.registry.add_recognizer(postcode_recognizer)
