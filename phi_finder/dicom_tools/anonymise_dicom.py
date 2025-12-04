@@ -1,8 +1,6 @@
 import os
 from typing import Tuple
 
-import numpy as np
-import pandas as pd
 import pydicom as dicom
 
 from presidio_image_redactor import DicomImageRedactorEngine
@@ -114,6 +112,16 @@ def _build_presidio_analyser(score_threshold: float=0.5,
             Pattern(
                 name="mrn",
                 regex=r"\d{5,9}",  # for numbers between 5-9 digits long
+                score=score_threshold,
+            )
+        ],
+    )
+    gender_recognizer = PatternRecognizer(
+        supported_entity="GENDER",
+        patterns=[
+            Pattern(
+                name="gender",
+                regex=r"(^[FfMm]$)|(^(?i)(male|female)$)",  # Sole string 'M' or 'F'
                 score=score_threshold,
             )
         ],
@@ -262,6 +270,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
     analyzer.registry.add_recognizer(phone_recognizer)
     analyzer.registry.add_recognizer(mrn_recognizer)
     analyzer.registry.add_recognizer(providernumber_recognizer)
+    analyzer.registry.add_recognizer(gender_recognizer)
     analyzer.registry.add_recognizer(date_recognizer)
     analyzer.registry.add_recognizer(street_recognizer)
     analyzer.registry.add_recognizer(postcode_recognizer)
@@ -382,14 +391,17 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         if elem.VR == "PN":
             elem.value = ["XXXX"]
         elif elem.VR in [
-            "LO",
-            "LT",
-            "OW",
-            "SH",
-            "ST",
-            "UC",
-            "UT",
-        ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1
+            "LO",  # Long String
+            "LT",  # Long Text
+            "OW",  # Other Word
+            "SH",  # Short String
+            "ST",  # Short Text
+            "UC",  # Unlimited Characters
+            "UT",  # Unlimited Text
+            "DA",  # Date
+            "CS",  # Code String
+            "AS",  # Age String
+        ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 analyzer_results = analyser.analyze(
                     text=elem.value, language="en", score_threshold=score_threshold

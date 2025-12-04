@@ -3,3 +3,4 @@ dist/
 *.dcm
 .vscode
 /phi_finder/_version.py
+extras/
