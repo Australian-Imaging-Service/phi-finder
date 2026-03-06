@@ -103,7 +103,12 @@ def deidentify_dicom_files(data_row: DataRow,
         _log_session(data_row, "debug-dump2", f"De-identifying {resource_path} to {anonymised_resource_path}.")
 
         # 1. Downloading the files from the original scan entry.
-        dicom_series = entry.item
+        try:
+            dicom_series = entry.item
+        except AssertionError as e:
+            print(f"AssertionError occurred while downloading files from {resource_path}: {e}")
+            _log_session(data_row, "debug-dump3", f"AssertionError occurred while downloading files from {resource_path}: {e}")
+            continue
         _log_session(data_row, "debug-dump3", f"Files from the original scan entry were downloaded.")
 
         # 2. Anonymising those files.
