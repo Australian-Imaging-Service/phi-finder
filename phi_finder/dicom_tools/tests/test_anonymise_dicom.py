@@ -62,6 +62,7 @@ def test_anonymise_image():
     anonymised_dataset = anonymise_dicom.anonymise_image(dataset,
                                                          analyser=None,
                                                          anonymizer=None,
+                                                         image_redactor=None,
                                                          score_threshold=0.5,
                                                          use_transformers=False)
     assert anonymised_dataset.PatientName == 'XXXX'

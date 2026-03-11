@@ -4,3 +4,4 @@ dist/
 .vscode
 /phi_finder/_version.py
 extras/
+*.csv

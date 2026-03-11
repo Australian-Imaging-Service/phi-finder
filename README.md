@@ -33,3 +33,5 @@ dcm = dicom.dcmread("/path/to/some/dicom.dcm")
 anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
 
 ```
+
+See demo.ipynb for more examples.
