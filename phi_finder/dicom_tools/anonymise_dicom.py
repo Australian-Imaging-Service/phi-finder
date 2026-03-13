@@ -351,9 +351,59 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
     return text
 
 
+def _anonymise_ds(ds: dicom.dataset.Dataset,
+                  analyser: AnalyzerEngine,
+                  anonymizer: AnonymizerEngine,
+                  score_threshold: float,
+                  use_transformers: bool,
+                  multilingual_nlp=None,
+                  profession_nlp=None,) -> None:
+    """Recursively anonymises all elements in a DICOM dataset in-place."""
+    for elem in ds.elements():
+        if elem.VR == "SQ":
+            for sub_ds in elem.value:
+                if not isinstance(sub_ds, dicom.dataset.Dataset):
+                    continue
+                _anonymise_ds(
+                    sub_ds, analyser, anonymizer, score_threshold,
+                    use_transformers, multilingual_nlp, profession_nlp
+                )
+        elif elem.VR == "PN":
+            ds[elem.tag].value = PersonName("XXXX")
+        elif elem.VR in [
+            "LO",  # Long String
+            "LT",  # Long Text
+            #"OW",  # Other Word
+            "SH",  # Short String
+            "ST",  # Short Text
+            "UC",  # Unlimited Characters
+            "UT",  # Unlimited Text
+            "DA",  # Date
+            "CS",  # Code String
+            "AS",  # Age String
+        ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
+            try:
+                text = str(elem.value)
+                analyzer_results = analyser.analyze(
+                    text=text, language="en", score_threshold=score_threshold
+                )
+                anonymized_text = anonymizer.anonymize(
+                    text=text,
+                    analyzer_results=analyzer_results,
+                    operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})},
+                ).text
+                if use_transformers:
+                    anonymized_text = _anonymise_with_transformer(multilingual_nlp, anonymized_text)
+                    anonymized_text = _anonymise_with_transformer(profession_nlp, anonymized_text)
+                ds[elem.tag].value = anonymized_text
+            except Exception as e:
+                print(f"Skipped {elem.tag} : {type(e).__name__}: {e}")
+
+
 def anonymise_image(ds: dicom.dataset.FileDataset,
                     analyser: AnalyzerEngine=None,
                     anonymizer: AnonymizerEngine=None,
+                    image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
                     use_transformers: bool=False) -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
@@ -367,6 +417,15 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     ds : pydicom.dataset.FileDataset
         The DICOM dataset containing the image data and metadata to be anonymised.
     
+    analyser : AnalyzerEngine, optional
+        Presidio analyser engine. Built automatically if not provided.
+
+    anonymizer : AnonymizerEngine, optional
+        Presidio anonymizer engine. Built automatically if not provided.
+
+    image_redactor : DicomImageRedactorEngine, optional
+        It redacts burned-in PHI from the pixel data.
+
     score_threshold : float, optional
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation. Default is 0.5.
@@ -379,8 +438,8 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     pydicom.dataset.FileDataset
         The anonymised DICOM.
     """
-    #engine = DicomImageRedactorEngine()
-    # ds = engine.redact(ds, fill="contrast")  # fill="background")
+    if image_redactor is not None:
+        ds = image_redactor.redact(ds, fill="contrast")  # fill="background")
     if analyser is None:
         analyser = _build_presidio_analyser(score_threshold)
     if anonymizer is None:
@@ -388,42 +447,9 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     if use_transformers:
         multilingual_nlp, profession_nlp = _build_transformers()
-    for element in ds.elements():
-        elem = ds[element.tag]
-        if elem.VR == "PN":
-            elem.value = PersonName("XXXX")
-        elif elem.VR in [
-            "LO",  # Long String
-            "LT",  # Long Text
-            "OW",  # Other Word
-            "SH",  # Short String
-            "ST",  # Short Text
-            "UC",  # Unlimited Characters
-            "UT",  # Unlimited Text
-            "DA",  # Date
-            "CS",  # Code String
-            "AS",  # Age String
-        ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
-            try:
-                analyzer_results = analyser.analyze(
-                    text=elem.value, language="en", score_threshold=score_threshold
-                )
-                anonymized_text = anonymizer.anonymize(
-                    text=elem.value,
-                    analyzer_results=analyzer_results,
-                    operators={
-                        "DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})
-                    },
-                ).text
-                if use_transformers:
-                    anonymized_text = _anonymise_with_transformer(
-                        multilingual_nlp, anonymized_text
-                    )
-                    anonymized_text = _anonymise_with_transformer(
-                        profession_nlp, anonymized_text
-                    )
-                elem.value = anonymized_text
-            except Exception as e:
-                #print(elem.tag)  # pixel data falls here.
-                print(f"Skipped elem.tag {elem.tag} elem.keyword ({elem.keyword}): {type(e).__name__}: {e}")
+    else:
+        multilingual_nlp, profession_nlp = None, None
+
+    _anonymise_ds(ds, analyser, anonymizer, score_threshold,
+                  use_transformers, multilingual_nlp, profession_nlp)
     return ds

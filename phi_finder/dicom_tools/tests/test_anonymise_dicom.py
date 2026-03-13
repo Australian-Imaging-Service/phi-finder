@@ -1,6 +1,8 @@
 import pytest
 import pydicom
 from pydicom.data import get_testdata_files
+from pydicom.valuerep import PersonName
+
 
 from phi_finder.dicom_tools import anonymise_dicom
 
@@ -62,6 +64,7 @@ def test_anonymise_image():
     anonymised_dataset = anonymise_dicom.anonymise_image(dataset,
                                                          analyser=None,
                                                          anonymizer=None,
+                                                         image_redactor=None,
                                                          score_threshold=0.5,
                                                          use_transformers=False)
-    assert anonymised_dataset.PatientName == 'XXXX'
+    assert anonymised_dataset.PatientName == PersonName('XXXX')
