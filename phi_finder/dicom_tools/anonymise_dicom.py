@@ -6,6 +6,7 @@ import pydicom as dicom
 from presidio_image_redactor import DicomImageRedactorEngine
 from presidio_anonymizer import AnonymizerEngine
 from pydicom.pixel_data_handlers.util import apply_voi_lut
+from pydicom.valuerep import PersonName
 from presidio_anonymizer.entities import OperatorConfig
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
 from presidio_analyzer.nlp_engine import NlpEngineProvider
@@ -167,6 +168,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         ],
     )
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Suburbs list from https://github.com/damiankotevski/anonymisation
     suburbs_australia_path = os.path.join(script_dir, "suburbs_australia.txt")
     with open(suburbs_australia_path, "r", encoding='utf8') as f:
         deny_list = f.readlines()
@@ -389,7 +391,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     for element in ds.elements():
         elem = ds[element.tag]
         if elem.VR == "PN":
-            elem.value = ["XXXX"]
+            elem.value = PersonName("XXXX")
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -421,6 +423,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                         profession_nlp, anonymized_text
                     )
                 elem.value = anonymized_text
-            except:
-                print(elem.tag)  # pixel data falls here.
+            except Exception as e:
+                #print(elem.tag)  # pixel data falls here.
+                print(f"Skipped elem.tag {elem.tag} elem.keyword ({elem.keyword}): {type(e).__name__}: {e}")
     return ds
