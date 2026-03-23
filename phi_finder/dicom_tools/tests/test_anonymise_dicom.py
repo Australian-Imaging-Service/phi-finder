@@ -61,6 +61,7 @@ def test_presidio_regex_clean(test_string: str):
 
 def test_anonymise_image():
     dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    #dataset = pydicom.dcmread("0.dcm")
     anonymised_dataset = anonymise_dicom.anonymise_image(dataset,
                                                          analyser=None,
                                                          anonymizer=None,

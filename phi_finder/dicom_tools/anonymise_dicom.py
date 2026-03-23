@@ -1,4 +1,6 @@
 import os
+import logging
+logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 from typing import Tuple
 
 import pydicom as dicom
@@ -359,7 +361,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   multilingual_nlp=None,
                   profession_nlp=None,) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place."""
-    for elem in ds.elements():
+    for elem in ds:
         if elem.VR == "SQ":
             for sub_ds in elem.value:
                 if not isinstance(sub_ds, dicom.dataset.Dataset):
@@ -368,8 +370,15 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     sub_ds, analyser, anonymizer, score_threshold,
                     use_transformers, multilingual_nlp, profession_nlp
                 )
-        elif elem.VR == "PN":
+        elif elem.VR == "PN":# or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
+        elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
+            continue
+        elif elem.tag == (0x0010, 0x0030):  # Birthdate
+            if len(elem.value) >= 4:  # Only redact what comes after the year.
+                birthdate_str = elem.value.strip()
+                redacted_value = birthdate_str[:4] + "0101"
+                ds[elem.tag].value = redacted_value
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -378,9 +387,9 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             "ST",  # Short Text
             "UC",  # Unlimited Characters
             "UT",  # Unlimited Text
-            "DA",  # Date
+            #"DA",  # Date
             "CS",  # Code String
-            "AS",  # Age String
+            #"AS",  # Age String
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 text = str(elem.value)
@@ -390,7 +399,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 anonymized_text = anonymizer.anonymize(
                     text=text,
                     analyzer_results=analyzer_results,
-                    operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})},
+                    operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                 ).text
                 if use_transformers:
                     anonymized_text = _anonymise_with_transformer(multilingual_nlp, anonymized_text)
