@@ -55,7 +55,7 @@ dev = [
     "fileformats[test]",
     "mypy >=1.5.1",
     "pydata-sphinx-theme >=0.13",
-    "pydicom>=3.0.2",                    # for typing
+    "pydicom",                    # for typing
 ]
 test = [
     "mypy >=1.5.1",
@@ -73,8 +73,7 @@ test = [
     "medimages4tests",
     "fileformats-extras",
     "fileformats-medimage-extras",
-    "xnat >=0.7.2",
-    "pydicom>=3.0.2"
+    "xnat >=0.7.2"
 ]
 docs = [
     "packaging",
