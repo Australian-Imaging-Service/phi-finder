@@ -23,6 +23,7 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "opencv-python>=4.10.0.84",
                 "transformers>=4.48.2",
                 "torch==2.6.0",
+                "pydicom==3.0.2",
                 "fileformats-medimage-extras",
 ]
 
@@ -55,7 +56,6 @@ dev = [
     "fileformats[test]",
     "mypy >=1.5.1",
     "pydata-sphinx-theme >=0.13",
-    "pydicom",                    # for typing
 ]
 test = [
     "mypy >=1.5.1",
