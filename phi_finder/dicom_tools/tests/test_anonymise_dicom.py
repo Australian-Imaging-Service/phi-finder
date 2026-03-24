@@ -69,3 +69,10 @@ def test_anonymise_image():
                                                          score_threshold=0.5,
                                                          use_transformers=False)
     assert anonymised_dataset.PatientName == PersonName('XXXX')
+    assert anonymised_dataset[0x0010, 0x0040].value != 'XXXX'  # Sex unchanged
+    if anonymised_dataset[0x0010, 0x0030].value != '':
+        assert anonymised_dataset[0x0010, 0x0030].value[4:] == '0101'  # Month and day fixed.
+    else:
+        assert anonymised_dataset[0x0010, 0x0030].value == ''  # Birthdate empty if not kept
+    #assert anonymised_dataset[0x0008, 0x0020].value == '20040119'  # Study Date unchanged
+    assert anonymised_dataset[0x0010, 0x1010].value == '000Y'  # Unchanged
