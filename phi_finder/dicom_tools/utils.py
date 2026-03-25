@@ -41,7 +41,8 @@ def deidentify_dicom_files(data_row: DataRow,
                            spacy_model_name: str="en_core_web_md",
                            destroy_pixels: bool=True,
                            use_transformers: bool=False,
-                           dry_run: bool=False) -> None:
+                           dry_run: bool=False,
+                           use_case: str='Standard') -> None:
     """Main function to deidentify dicom files in a data row.
         1. Download the files from the original scan entry fmap/DICOM
         2. Anonymise those files and store the anonymised files in a temp dir
@@ -71,6 +72,10 @@ def deidentify_dicom_files(data_row: DataRow,
     dry_run : bool, optional (default False)
         If True, the function will not perform any changes, only log the actions that would be taken.
         Note that original DICOM files will still be loaded.
+
+    use_case : FUTURE USE str, optional (default 'Standard')
+        Standard: some fields are not redacted, only flagged.
+        Aggressive: all PII fields are redacted.
 
     Returns
     -------
@@ -122,7 +127,8 @@ def deidentify_dicom_files(data_row: DataRow,
                                                              analyser=analyser,
                                                              anonymizer=anonymizer,
                                                              score_threshold=score_threshold,
-                                                             use_transformers=use_transformers)
+                                                             use_transformers=use_transformers,
+                                                             use_case=use_case)
             if destroy_pixels:
                anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
             tmp_path = Path(f"anonymised{i}-tmp_{dicom.stem}.dcm")

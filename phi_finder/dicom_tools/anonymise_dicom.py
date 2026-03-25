@@ -359,7 +359,8 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   score_threshold: float,
                   use_transformers: bool,
                   multilingual_nlp=None,
-                  profession_nlp=None,) -> None:
+                  profession_nlp=None,
+                  use_case: str='Standard') -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place."""
     for elem in ds:
         if elem.VR == "SQ":
@@ -368,7 +369,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     continue
                 _anonymise_ds(
                     sub_ds, analyser, anonymizer, score_threshold,
-                    use_transformers, multilingual_nlp, profession_nlp
+                    use_transformers, multilingual_nlp, profession_nlp, use_case
                 )
         elif elem.VR == "PN":# or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
@@ -414,7 +415,8 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     anonymizer: AnonymizerEngine=None,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
-                    use_transformers: bool=False) -> dicom.dataset.FileDataset:
+                    use_transformers: bool=False,
+                    use_case: str='Standard') -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
 
     This function processes the DICOM dataset, redacting personal names and other
@@ -442,6 +444,10 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     use_transformers : bool, optional (default False)
         If True, transformers will be used for anonymisation on top of Presidio's output.
 
+    use_case : str, optional (default 'Standard')
+        Standard: some fields are not redacted, only flagged.
+        Aggressive: all PII fields are redacted.
+
     Returns
     -------
     pydicom.dataset.FileDataset
@@ -460,5 +466,5 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         multilingual_nlp, profession_nlp = None, None
 
     _anonymise_ds(ds, analyser, anonymizer, score_threshold,
-                  use_transformers, multilingual_nlp, profession_nlp)
+                  use_transformers, multilingual_nlp, profession_nlp, use_case)
     return ds
