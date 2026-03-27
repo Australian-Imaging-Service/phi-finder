@@ -1,9 +1,11 @@
 import os
+import json
 import logging
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 from typing import Tuple
 
 import pydicom as dicom
+from pydicom.datadict import add_private_dict_entries
 
 from presidio_image_redactor import DicomImageRedactorEngine
 from presidio_anonymizer import AnonymizerEngine
@@ -360,7 +362,8 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   use_transformers: bool,
                   multilingual_nlp=None,
                   profession_nlp=None,
-                  use_case: str='Standard') -> None:
+                  use_case: str='Standard',
+                  anonymised_headers=[]) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place."""
     for elem in ds:
         if elem.VR == "SQ":
@@ -369,10 +372,12 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     continue
                 _anonymise_ds(
                     sub_ds, analyser, anonymizer, score_threshold,
-                    use_transformers, multilingual_nlp, profession_nlp, use_case
+                    use_transformers, multilingual_nlp, profession_nlp, use_case,
+                    anonymised_headers
                 )
         elif elem.VR == "PN":# or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
+            anonymised_headers.append({str(elem.tag): elem.name})
         elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
             continue
         elif elem.tag == (0x0010, 0x0030):  # Birthdate
@@ -380,6 +385,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 birthdate_str = elem.value.strip()
                 redacted_value = birthdate_str[:4] + "0101"
                 ds[elem.tag].value = redacted_value
+                anonymised_headers.append({str(elem.tag): elem.name})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -402,6 +408,8 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     analyzer_results=analyzer_results,
                     operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                 ).text
+                if 'XXXX' in anonymized_text:
+                    anonymised_headers.append({str(elem.tag): elem.name})
                 if use_transformers:
                     anonymized_text = _anonymise_with_transformer(multilingual_nlp, anonymized_text)
                     anonymized_text = _anonymise_with_transformer(profession_nlp, anonymized_text)
@@ -453,6 +461,11 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     pydicom.dataset.FileDataset
         The anonymised DICOM.
     """
+    new_dict_items = {
+        0x02091000: ('ST', '1', 'Flagged Headers PHI-Finder')  # Private tag to store the list of anonymised headers,
+    }
+    add_private_dict_entries(private_creator="phi-finder", new_entries_dict=new_dict_items)
+
     if image_redactor is not None:
         ds = image_redactor.redact(ds, fill="contrast")  # fill="background")
     if analyser is None:
@@ -465,6 +478,16 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     else:
         multilingual_nlp, profession_nlp = None, None
 
+    anonymised_headers = []
     _anonymise_ds(ds, analyser, anonymizer, score_threshold,
-                  use_transformers, multilingual_nlp, profession_nlp, use_case)
+                  use_transformers, multilingual_nlp, profession_nlp, use_case, anonymised_headers)
+    '''
+    Adding a private header with the flagged headers list.
+    private_block() reserves a slot (e.g., 0x10) and writes the creator name at (0x0209, 0x0010).
+    The actual data then lives at (0x0209, 0x10XX).
+    Then, ds.add_new([0x0209, 0x0010], ...) overwrites the Private Creator element itself.
+    '''
+    flagged_headers = json.dumps(anonymised_headers)
+    block = ds.private_block(0x0209, "phi-finder", create=True)
+    block.add_new(0x00, 'ST', flagged_headers)  # 0x00 offset within block → maps to (0x0209, 0x1000)
     return ds
