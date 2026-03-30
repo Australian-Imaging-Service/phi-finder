@@ -1,5 +1,6 @@
 import pytest
 import pydicom
+import json
 from pydicom.data import get_testdata_files
 from pydicom.valuerep import PersonName
 
@@ -76,3 +77,7 @@ def test_anonymise_image():
         assert anonymised_dataset[0x0010, 0x0030].value == ''  # Birthdate empty if not kept
     #assert anonymised_dataset[0x0008, 0x0020].value == '20040119'  # Study Date unchanged
     assert anonymised_dataset[0x0010, 0x1010].value == '000Y'  # Unchanged
+    assert (0x02091000) in anonymised_dataset
+    assert anonymised_dataset[0x0209, 0x1000].name == '[Flagged Headers PHI-Finder]'
+    assert anonymised_dataset[0x0209, 0x1000].VR == 'ST'
+    assert json.loads(anonymised_dataset[0x0209, 0x1000].value)
