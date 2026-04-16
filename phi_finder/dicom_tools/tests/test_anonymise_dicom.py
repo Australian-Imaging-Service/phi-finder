@@ -8,6 +8,14 @@ from pydicom.valuerep import PersonName
 from phi_finder.dicom_tools import anonymise_dicom
 
 
+def test_anonymise_with_transformer():
+    model = anonymise_dicom._build_transformer()
+    text = "John Doe was born on 01/01/1980 and has a social security number of 123-45-6789."
+    anon = anonymise_dicom._anonymise_with_transformer(model, text=text, threshold=0.01)
+    assert anon != text
+    assert "XXXX" in anon
+
+
 def test_destroy_pixels():
     filename = get_testdata_files("CT_small.dcm")[0]
     dataset = pydicom.dcmread(filename)

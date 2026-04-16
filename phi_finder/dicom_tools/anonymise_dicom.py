@@ -2,10 +2,13 @@ import os
 import json
 import logging
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
-from typing import Tuple
 
+import torch
+import torch.ao.quantization as taq
 import pydicom as dicom
 from pydicom.datadict import add_private_dict_entries
+from gliner import GLiNER
+from gliner.model import UniEncoderSpanGLiNER
 
 from presidio_image_redactor import DicomImageRedactorEngine
 from presidio_anonymizer import AnonymizerEngine
@@ -14,7 +17,6 @@ from pydicom.valuerep import PersonName
 from presidio_anonymizer.entities import OperatorConfig
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
 from presidio_analyzer.nlp_engine import NlpEngineProvider
-from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification, TokenClassificationPipeline
 
 
 def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
@@ -286,47 +288,24 @@ def _build_presidio_analyser(score_threshold: float=0.5,
     return analyzer
 
 
-def _build_transformers() -> Tuple[TokenClassificationPipeline, TokenClassificationPipeline]:
-    """Builds and returns named entity recognition (NER) pipelines for multilingual and profession-specific models.
-
-    This function initializes two NER pipelines:
-    1. A multilingual NER pipeline using the "Babelscape/wikineural-multilingual-ner" model.
-    2. A profession-specific NER pipeline using the "BSC-NLP4BIA/prof-ner-cat-v1" model.
-
-    Returns
-    -------
-    tuple
-        A tuple containing two Huggingface's TokenClassificationPipeline:
-        - multilingual_nlp: The multilingual NER pipeline.
-        - profession_nlp: The profession-specific NER pipeline.
-    """
-    multilingual_tokenizer = AutoTokenizer.from_pretrained(
-        "Babelscape/wikineural-multilingual-ner"
-    )
-    multilingual_model = AutoModelForTokenClassification.from_pretrained(
-        "Babelscape/wikineural-multilingual-ner"
-    )
-    multilingual_nlp = pipeline(
-        "ner",
-        model=multilingual_model,
-        tokenizer=multilingual_tokenizer,
-        grouped_entities=True,
-    )
-
-    profession_tokenizer = AutoTokenizer.from_pretrained("BSC-NLP4BIA/prof-ner-cat-v1")
-    profession_model = AutoModelForTokenClassification.from_pretrained(
-        "BSC-NLP4BIA/prof-ner-cat-v1"
-    )
-    profession_nlp = pipeline(
-        "ner",
-        model=profession_model,
-        tokenizer=profession_tokenizer,
-        grouped_entities=True,
-    )
-    return multilingual_nlp, profession_nlp
+def _build_transformer() -> UniEncoderSpanGLiNER:
+    model = GLiNER.from_pretrained("nvidia/gliner-pii", max_length=384)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+    if torch.cuda.is_available():
+        model.compile()
+        torch.set_float32_matmul_precision('high')
+    else:
+        model = taq.quantize_dynamic(
+            model,
+            {torch.nn.Linear},  # quantize all Linear layers to INT8
+            dtype=torch.qint8,
+        )
+    return model
 
 
-def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) -> str:
+def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshold: float=0.01) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
 
     This function processes the input text through the provided NER pipeline,
@@ -334,7 +313,7 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
 
     Parameters
     ----------
-    pipe : Huggingface's TokenClassificationPipeline
+    model : Gliner's UniEncoderSpanGLiNER
         The NER pipeline to use for entity recognition.
     
     text : str
@@ -345,13 +324,38 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
     str
         The anonymised text with specified entities replaced by "[XXXX]".
     """
-    ner_results = pipe(text)
-    for ner_result in ner_results:
-        if ner_result["entity_group"] not in ["PER", "LOC", "ORG"]:
-            continue
-        text = text.replace(
-            ner_result["word"], "[XXXX]"
-        )  # if ner_result['score'] > 0.5 else text
+    LABELS = [
+        "age", "profession", "gender",
+        "sex", "language", "ethnicity",
+        "country", "city", "state", "suburb",
+        "location", "person", "organization",
+        "phone number", "address", "passport number",
+        "email", "credit card number",
+        "social security number", "health insurance id number",
+        "date of birth", "mobile phone number",
+        "bank account number", "medication", "cpf",
+        "drivers license number", "tax identification number",
+        "medical condition", "identity card number",
+        "national id number", "ip address", "email address",
+        "iban", "credit card expiration date", "username",
+        "health insurance number", "registration number",
+        "student id number", "insurance number",
+        "flight number", "landline phone number",
+        "blood type", "cvv", "reservation number",
+        "digital signature", "social media handle",
+        "license plate number", "cnpj", "postal code",
+        "passport_number", "serial number",
+        "vehicle registration number", "credit card brand",
+        "fax number", "visa number", "insurance company",
+        "identity document number", "transaction number",
+        "national health insurance number", "cvc",
+        "birth certificate number", "train ticket number",
+        "passport expiration date", "social_security_number",
+    ]
+    with torch.inference_mode():
+        pred_entities = model.predict_entities(text, LABELS, threshold=threshold)
+    for entity in pred_entities:
+        text = text.replace(entity['text'], 'XXXX')
     return text
 
 
@@ -360,8 +364,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   anonymizer: AnonymizerEngine,
                   score_threshold: float,
                   use_transformers: bool,
-                  multilingual_nlp=None,
-                  profession_nlp=None,
+                  gliner_pii=None,
                   use_case: str='Standard',
                   anonymised_headers=[]) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place."""
@@ -372,7 +375,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     continue
                 _anonymise_ds(
                     sub_ds, analyser, anonymizer, score_threshold,
-                    use_transformers, multilingual_nlp, profession_nlp, use_case,
+                    use_transformers, gliner_pii, use_case,
                     anonymised_headers
                 )
         elif elem.VR == "PN":# or elem.tag == (0x0010, 0x0010):
@@ -410,9 +413,8 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 ).text
                 if 'XXXX' in anonymized_text:
                     anonymised_headers.append({str(elem.tag): elem.name})
-                if use_transformers:
-                    anonymized_text = _anonymise_with_transformer(multilingual_nlp, anonymized_text)
-                    anonymized_text = _anonymise_with_transformer(profession_nlp, anonymized_text)
+                if use_transformers and len(anonymized_text) > 30:  # Only apply transformer to longer texts.
+                    anonymized_text = _anonymise_with_transformer(gliner_pii, anonymized_text, threshold=score_threshold)
                 ds[elem.tag].value = anonymized_text
             except Exception as e:
                 print(f"Skipped {elem.tag} : {type(e).__name__}: {e}")
@@ -474,13 +476,13 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     if use_transformers:
-        multilingual_nlp, profession_nlp = _build_transformers()
+        gliner_pii = _build_transformer()
     else:
-        multilingual_nlp, profession_nlp = None, None
+        gliner_pii = None
 
     anonymised_headers = []
     _anonymise_ds(ds, analyser, anonymizer, score_threshold,
-                  use_transformers, multilingual_nlp, profession_nlp, use_case, anonymised_headers)
+                  use_transformers, gliner_pii, use_case, anonymised_headers)
     '''
     Adding a private header with the flagged headers list.
     private_block() reserves a slot (e.g., 0x10) and writes the creator name at (0x0209, 0x0010).

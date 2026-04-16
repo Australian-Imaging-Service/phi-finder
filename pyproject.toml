@@ -23,6 +23,7 @@ dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
                 "opencv-python>=4.10.0.84",
                 "transformers>=4.48.2",
                 "torch==2.6.0",
+                "gliner==0.2.26",
                 "fileformats-medimage-extras",
 ]
 
