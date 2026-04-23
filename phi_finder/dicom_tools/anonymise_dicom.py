@@ -1,7 +1,15 @@
 import os
-from typing import Tuple
+import json
+import logging
+from datetime import datetime
+logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 
+import torch
+import torch.ao.quantization as taq
 import pydicom as dicom
+from pydicom.datadict import add_private_dict_entries
+from gliner import GLiNER
+from gliner.model import UniEncoderSpanGLiNER
 
 from presidio_image_redactor import DicomImageRedactorEngine
 from presidio_anonymizer import AnonymizerEngine
@@ -10,7 +18,6 @@ from pydicom.valuerep import PersonName
 from presidio_anonymizer.entities import OperatorConfig
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
 from presidio_analyzer.nlp_engine import NlpEngineProvider
-from transformers import pipeline, AutoTokenizer, AutoModelForTokenClassification, TokenClassificationPipeline
 
 
 def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
@@ -122,7 +129,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         patterns=[
             Pattern(
                 name="gender",
-                regex=r"(^[FfMm]$)|(^(?i)(male|female)$)",  # Sole string 'M' or 'F'
+                regex=r"(?i)(^[fm]$)|(^(male|female)$)",  # Sole string 'M' or 'F'
                 score=score_threshold,
             )
         ],
@@ -282,47 +289,24 @@ def _build_presidio_analyser(score_threshold: float=0.5,
     return analyzer
 
 
-def _build_transformers() -> Tuple[TokenClassificationPipeline, TokenClassificationPipeline]:
-    """Builds and returns named entity recognition (NER) pipelines for multilingual and profession-specific models.
-
-    This function initializes two NER pipelines:
-    1. A multilingual NER pipeline using the "Babelscape/wikineural-multilingual-ner" model.
-    2. A profession-specific NER pipeline using the "BSC-NLP4BIA/prof-ner-cat-v1" model.
-
-    Returns
-    -------
-    tuple
-        A tuple containing two Huggingface's TokenClassificationPipeline:
-        - multilingual_nlp: The multilingual NER pipeline.
-        - profession_nlp: The profession-specific NER pipeline.
-    """
-    multilingual_tokenizer = AutoTokenizer.from_pretrained(
-        "Babelscape/wikineural-multilingual-ner"
-    )
-    multilingual_model = AutoModelForTokenClassification.from_pretrained(
-        "Babelscape/wikineural-multilingual-ner"
-    )
-    multilingual_nlp = pipeline(
-        "ner",
-        model=multilingual_model,
-        tokenizer=multilingual_tokenizer,
-        grouped_entities=True,
-    )
-
-    profession_tokenizer = AutoTokenizer.from_pretrained("BSC-NLP4BIA/prof-ner-cat-v1")
-    profession_model = AutoModelForTokenClassification.from_pretrained(
-        "BSC-NLP4BIA/prof-ner-cat-v1"
-    )
-    profession_nlp = pipeline(
-        "ner",
-        model=profession_model,
-        tokenizer=profession_tokenizer,
-        grouped_entities=True,
-    )
-    return multilingual_nlp, profession_nlp
+def _build_transformer() -> UniEncoderSpanGLiNER:
+    model = GLiNER.from_pretrained("nvidia/gliner-pii", max_length=384)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+    if torch.cuda.is_available():
+        model.compile()
+        torch.set_float32_matmul_precision('high')
+    else:
+        model = taq.quantize_dynamic(
+            model,
+            {torch.nn.Linear},  # quantize all Linear layers to INT8
+            dtype=torch.qint8,
+        )
+    return model
 
 
-def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) -> str:
+def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshold: float=0.01) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
 
     This function processes the input text through the provided NER pipeline,
@@ -330,7 +314,7 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
 
     Parameters
     ----------
-    pipe : Huggingface's TokenClassificationPipeline
+    model : Gliner's UniEncoderSpanGLiNER
         The NER pipeline to use for entity recognition.
     
     text : str
@@ -341,13 +325,34 @@ def _anonymise_with_transformer(pipe: TokenClassificationPipeline, text: str) ->
     str
         The anonymised text with specified entities replaced by "[XXXX]".
     """
-    ner_results = pipe(text)
-    for ner_result in ner_results:
-        if ner_result["entity_group"] not in ["PER", "LOC", "ORG"]:
-            continue
-        text = text.replace(
-            ner_result["word"], "[XXXX]"
-        )  # if ner_result['score'] > 0.5 else text
+    LABELS = [
+        "age", "profession", "gender",
+        "sex", "language", "ethnicity",
+        "country", "city", "state", "suburb",
+        "location", "person", "organization",
+        "phone number", "address", "passport number",
+        "email", "social security number", "health insurance id number",
+        "date of birth", "mobile phone number",
+        "health insurance number",
+    ]
+    # merged collapses overlapping entity spans into non-overlapping 
+    # ones so the slice-replacement at the end doesn't 
+    # double-redact or produce corrupted offsets.
+    # e.g. "Dr John Smith" might be person (0–13) and profession (0–2).
+    try:
+        with torch.inference_mode():
+            pred_entities = model.predict_entities(text, LABELS, threshold=threshold)
+        spans = sorted((e['start'], e['end']) for e in pred_entities)
+        merged: list[tuple[int, int]] = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        for start, end in reversed(merged):
+            text = text[:start] + 'XXXX' + text[end:]
+    except Exception as e:
+        print(f"Error occurred while anonymising text: {e}")
     return text
 
 
@@ -356,20 +361,42 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   anonymizer: AnonymizerEngine,
                   score_threshold: float,
                   use_transformers: bool,
-                  multilingual_nlp=None,
-                  profession_nlp=None,) -> None:
+                  gliner_pii=None,
+                  use_case: str='Standard',
+                  anonymised_headers: list | None = None) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place."""
-    for elem in ds.elements():
+    if anonymised_headers is None:
+        anonymised_headers = []
+    for elem in ds:
         if elem.VR == "SQ":
             for sub_ds in elem.value:
                 if not isinstance(sub_ds, dicom.dataset.Dataset):
                     continue
                 _anonymise_ds(
                     sub_ds, analyser, anonymizer, score_threshold,
-                    use_transformers, multilingual_nlp, profession_nlp
+                    use_transformers, gliner_pii, use_case,
+                    anonymised_headers
                 )
-        elif elem.VR == "PN":
+        elif elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+        elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
+            continue
+        elif elem.tag == (0x0010, 0x0030):  # Birthdate
+            birthdate_str = str(elem.value).strip()
+            if birthdate_str == "":
+                continue
+            year = None
+            for fmt in ("%Y%m%d", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y"):
+                try:
+                    year = datetime.strptime(birthdate_str, fmt).year
+                    break
+                except ValueError:
+                    continue
+            # Fail-safe: if the format is unrecognised, scrub the value so the
+            # original birthdate never survives in the dataset.
+            ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -378,24 +405,37 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             "ST",  # Short Text
             "UC",  # Unlimited Characters
             "UT",  # Unlimited Text
-            "DA",  # Date
+            #"DA",  # Date
             "CS",  # Code String
-            "AS",  # Age String
+            #"AS",  # Age String
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
-                text = str(elem.value)
-                analyzer_results = analyser.analyze(
-                    text=text, language="en", score_threshold=score_threshold
-                )
-                anonymized_text = anonymizer.anonymize(
-                    text=text,
-                    analyzer_results=analyzer_results,
-                    operators={"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})},
-                ).text
-                if use_transformers:
-                    anonymized_text = _anonymise_with_transformer(multilingual_nlp, anonymized_text)
-                    anonymized_text = _anonymise_with_transformer(profession_nlp, anonymized_text)
-                ds[elem.tag].value = anonymized_text
+                original = elem.value
+                if original is None:
+                    continue
+                is_multi = isinstance(original, dicom.multival.MultiValue)
+                if is_multi and len(original) == 0:
+                    continue
+                if not is_multi and original == "":
+                    continue
+                values = [str(v) for v in original] if is_multi else [str(original)]
+                new_values = []
+                for v in values:
+                    analyzer_results = analyser.analyze(text=v, language="en", score_threshold=score_threshold)
+                    redacted = anonymizer.anonymize(
+                        text=v,
+                        analyzer_results=analyzer_results,
+                        operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
+                    ).text
+                    if use_transformers and len(redacted) > 30:
+                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold)
+                    new_values.append(redacted)
+                if new_values != values:
+                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+                if is_multi:
+                    ds[elem.tag].value = dicom.multival.MultiValue(str, new_values)
+                else:
+                    ds[elem.tag].value = new_values[0]
             except Exception as e:
                 print(f"Skipped {elem.tag} : {type(e).__name__}: {e}")
 
@@ -405,7 +445,8 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     anonymizer: AnonymizerEngine=None,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
-                    use_transformers: bool=False) -> dicom.dataset.FileDataset:
+                    use_transformers: bool=False,
+                    use_case: str='Standard') -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
 
     This function processes the DICOM dataset, redacting personal names and other
@@ -433,11 +474,20 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     use_transformers : bool, optional (default False)
         If True, transformers will be used for anonymisation on top of Presidio's output.
 
+    use_case : str, optional (default 'Standard')
+        Standard: some fields are not redacted, only flagged.
+        Aggressive: all PII fields are redacted.
+
     Returns
     -------
     pydicom.dataset.FileDataset
         The anonymised DICOM.
     """
+    new_dict_items = {
+        0x02091000: ('ST', '1', 'Flagged Headers PHI-Finder')  # Private tag to store the list of anonymised headers,
+    }
+    add_private_dict_entries(private_creator="phi-finder", new_entries_dict=new_dict_items)
+
     if image_redactor is not None:
         ds = image_redactor.redact(ds, fill="contrast")  # fill="background")
     if analyser is None:
@@ -446,10 +496,20 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
     if use_transformers:
-        multilingual_nlp, profession_nlp = _build_transformers()
+        gliner_pii = _build_transformer()
     else:
-        multilingual_nlp, profession_nlp = None, None
+        gliner_pii = None
 
+    anonymised_headers = []
     _anonymise_ds(ds, analyser, anonymizer, score_threshold,
-                  use_transformers, multilingual_nlp, profession_nlp)
+                  use_transformers, gliner_pii, use_case, anonymised_headers)
+    '''
+    Adding a private header with the flagged headers list.
+    private_block() reserves a slot (e.g., 0x10) and writes the creator name at (0x0209, 0x0010).
+    The actual data then lives at (0x0209, 0x10XX).
+    Then, ds.add_new([0x0209, 0x0010], ...) overwrites the Private Creator element itself.
+    '''
+    flagged_headers = json.dumps(anonymised_headers)
+    block = ds.private_block(0x0209, "phi-finder", create=True)
+    block.add_new(0x00, 'ST', flagged_headers)  # 0x00 offset within block → maps to (0x0209, 0x1000)
     return ds

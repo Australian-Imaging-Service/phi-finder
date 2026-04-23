@@ -1,10 +1,19 @@
 import pytest
 import pydicom
+import json
 from pydicom.data import get_testdata_files
 from pydicom.valuerep import PersonName
 
 
 from phi_finder.dicom_tools import anonymise_dicom
+
+
+def test_anonymise_with_transformer():
+    model = anonymise_dicom._build_transformer()
+    text = "John Doe was born on 01/01/1980 and has a social security number of 123-45-6789."
+    anon = anonymise_dicom._anonymise_with_transformer(model, text=text, threshold=0.01)
+    assert anon != text
+    assert "XXXX" in anon
 
 
 def test_destroy_pixels():
@@ -61,6 +70,7 @@ def test_presidio_regex_clean(test_string: str):
 
 def test_anonymise_image():
     dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    #dataset = pydicom.dcmread("0.dcm")
     anonymised_dataset = anonymise_dicom.anonymise_image(dataset,
                                                          analyser=None,
                                                          anonymizer=None,
@@ -68,3 +78,41 @@ def test_anonymise_image():
                                                          score_threshold=0.5,
                                                          use_transformers=False)
     assert anonymised_dataset.PatientName == PersonName('XXXX')
+    assert anonymised_dataset[0x0010, 0x0040].value != 'XXXX'  # Sex unchanged
+    if anonymised_dataset[0x0010, 0x0030].value != '':
+        assert anonymised_dataset[0x0010, 0x0030].value[4:] == '0101'  # Month and day fixed.
+    else:
+        assert anonymised_dataset[0x0010, 0x0030].value == ''  # Birthdate empty if not kept
+    #assert anonymised_dataset[0x0008, 0x0020].value == '20040119'  # Study Date unchanged
+    assert anonymised_dataset[0x0010, 0x1010].value == '000Y'  # Unchanged
+    assert (0x02091000) in anonymised_dataset
+    assert anonymised_dataset[0x0209, 0x1000].name == '[Flagged Headers PHI-Finder]'
+    assert anonymised_dataset[0x0209, 0x1000].VR == 'ST'
+    assert json.loads(anonymised_dataset[0x0209, 0x1000].value)
+
+
+def test_anonymise_ds_recurses_into_sq():
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+
+    nested = pydicom.Dataset()
+    nested.PatientName = PersonName("Dr Jane Doe")
+    dataset.RequestAttributesSequence = pydicom.Sequence([nested])
+
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        analyser=None,
+        anonymizer=None,
+        image_redactor=None,
+        score_threshold=0.5,
+        use_transformers=False,
+    )
+
+    assert anonymised_dataset.PatientName == PersonName("XXXX")
+
+    nested_after = anonymised_dataset.RequestAttributesSequence[0]
+    assert nested_after.PatientName == PersonName("XXXX")
+
+    flagged = json.loads(anonymised_dataset[0x0209, 0x1000].value)
+    pn_tag_str = str(pydicom.tag.Tag(0x0010, 0x0010))
+    pn_entries = [e for e in flagged if e.get("tag") == pn_tag_str]
+    assert len(pn_entries) >= 2
