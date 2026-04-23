@@ -129,7 +129,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         patterns=[
             Pattern(
                 name="gender",
-                regex=r"(^[FfMm]$)|(^(?i)(male|female)$)",  # Sole string 'M' or 'F'
+                regex=r"(?i)(^[fm]$)|(^(male|female)$)",  # Sole string 'M' or 'F'
                 score=score_threshold,
             )
         ],
@@ -335,11 +335,22 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshol
         "date of birth", "mobile phone number",
         "health insurance number",
     ]
+    # merged collapses overlapping entity spans into non-overlapping 
+    # ones so the slice-replacement at the end doesn't 
+    # double-redact or produce corrupted offsets.
+    # e.g. "Dr John Smith" might be person (0–13) and profession (0–2).
     try:
         with torch.inference_mode():
             pred_entities = model.predict_entities(text, LABELS, threshold=threshold)
-        for entity in pred_entities:
-            text = text.replace(entity['text'], 'XXXX')
+        spans = sorted((e['start'], e['end']) for e in pred_entities)
+        merged: list[tuple[int, int]] = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        for start, end in reversed(merged):
+            text = text[:start] + 'XXXX' + text[end:]
     except Exception as e:
         print(f"Error occurred while anonymising text: {e}")
     return text
@@ -368,7 +379,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 )
         elif elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
-            anonymised_headers.append({str(elem.tag): elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
         elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
             continue
         elif elem.tag == (0x0010, 0x0030):  # Birthdate
@@ -383,7 +394,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # Fail-safe: if the format is unrecognised, scrub the value so the
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
-            anonymised_headers.append({str(elem.tag): elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -418,7 +429,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold)
                     new_values.append(redacted)
                 if new_values != values:
-                    anonymised_headers.append({str(elem.tag): elem.name})
+                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
                 if is_multi:
                     ds[elem.tag].value = dicom.multival.MultiValue(str, new_values)
                 else:
