@@ -384,6 +384,8 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             continue
         elif elem.tag == (0x0010, 0x0030):  # Birthdate
             birthdate_str = str(elem.value).strip()
+            if birthdate_str == "":
+                continue
             year = None
             for fmt in ("%Y%m%d", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y"):
                 try:

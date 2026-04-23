@@ -89,3 +89,30 @@ def test_anonymise_image():
     assert anonymised_dataset[0x0209, 0x1000].name == '[Flagged Headers PHI-Finder]'
     assert anonymised_dataset[0x0209, 0x1000].VR == 'ST'
     assert json.loads(anonymised_dataset[0x0209, 0x1000].value)
+
+
+def test_anonymise_ds_recurses_into_sq():
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+
+    nested = pydicom.Dataset()
+    nested.PatientName = PersonName("Dr Jane Doe")
+    dataset.RequestAttributesSequence = pydicom.Sequence([nested])
+
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        analyser=None,
+        anonymizer=None,
+        image_redactor=None,
+        score_threshold=0.5,
+        use_transformers=False,
+    )
+
+    assert anonymised_dataset.PatientName == PersonName("XXXX")
+
+    nested_after = anonymised_dataset.RequestAttributesSequence[0]
+    assert nested_after.PatientName == PersonName("XXXX")
+
+    flagged = json.loads(anonymised_dataset[0x0209, 0x1000].value)
+    pn_tag_str = str(pydicom.tag.Tag(0x0010, 0x0010))
+    pn_entries = [e for e in flagged if e.get("tag") == pn_tag_str]
+    assert len(pn_entries) >= 2
