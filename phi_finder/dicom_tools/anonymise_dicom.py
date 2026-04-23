@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+from datetime import datetime
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 
 import torch
@@ -334,10 +335,13 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshol
         "date of birth", "mobile phone number",
         "health insurance number",
     ]
-    with torch.inference_mode():
-        pred_entities = model.predict_entities(text, LABELS, threshold=threshold)
-    for entity in pred_entities:
-        text = text.replace(entity['text'], 'XXXX')
+    try:
+        with torch.inference_mode():
+            pred_entities = model.predict_entities(text, LABELS, threshold=threshold)
+        for entity in pred_entities:
+            text = text.replace(entity['text'], 'XXXX')
+    except Exception as e:
+        print(f"Error occurred while anonymising text: {e}")
     return text
 
 
@@ -348,8 +352,10 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   use_transformers: bool,
                   gliner_pii=None,
                   use_case: str='Standard',
-                  anonymised_headers=[]) -> None:
+                  anonymised_headers: list | None = None) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place."""
+    if anonymised_headers is None:
+        anonymised_headers = []
     for elem in ds:
         if elem.VR == "SQ":
             for sub_ds in elem.value:
@@ -360,17 +366,24 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     use_transformers, gliner_pii, use_case,
                     anonymised_headers
                 )
-        elif elem.VR == "PN":# or elem.tag == (0x0010, 0x0010):
+        elif elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
             anonymised_headers.append({str(elem.tag): elem.name})
         elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
             continue
         elif elem.tag == (0x0010, 0x0030):  # Birthdate
-            if len(elem.value) >= 4:  # Only redact what comes after the year.
-                birthdate_str = elem.value.strip()
-                redacted_value = birthdate_str[:4] + "0101"
-                ds[elem.tag].value = redacted_value
-                anonymised_headers.append({str(elem.tag): elem.name})
+            birthdate_str = str(elem.value).strip()
+            year = None
+            for fmt in ("%Y%m%d", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y"):
+                try:
+                    year = datetime.strptime(birthdate_str, fmt).year
+                    break
+                except ValueError:
+                    continue
+            # Fail-safe: if the format is unrecognised, scrub the value so the
+            # original birthdate never survives in the dataset.
+            ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
+            anonymised_headers.append({str(elem.tag): elem.name})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -384,20 +397,32 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             #"AS",  # Age String
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
-                text = str(elem.value)
-                analyzer_results = analyser.analyze(
-                    text=text, language="en", score_threshold=score_threshold
-                )
-                anonymized_text = anonymizer.anonymize(
-                    text=text,
-                    analyzer_results=analyzer_results,
-                    operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
-                ).text
-                if 'XXXX' in anonymized_text:
+                original = elem.value
+                if original is None:
+                    continue
+                is_multi = isinstance(original, dicom.multival.MultiValue)
+                if is_multi and len(original) == 0:
+                    continue
+                if not is_multi and original == "":
+                    continue
+                values = [str(v) for v in original] if is_multi else [str(original)]
+                new_values = []
+                for v in values:
+                    analyzer_results = analyser.analyze(text=v, language="en", score_threshold=score_threshold)
+                    redacted = anonymizer.anonymize(
+                        text=v,
+                        analyzer_results=analyzer_results,
+                        operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
+                    ).text
+                    if use_transformers and len(redacted) > 30:
+                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold)
+                    new_values.append(redacted)
+                if new_values != values:
                     anonymised_headers.append({str(elem.tag): elem.name})
-                if use_transformers and len(anonymized_text) > 30:  # Only apply transformer to longer texts.
-                    anonymized_text = _anonymise_with_transformer(gliner_pii, anonymized_text, threshold=score_threshold)
-                ds[elem.tag].value = anonymized_text
+                if is_multi:
+                    ds[elem.tag].value = dicom.multival.MultiValue(str, new_values)
+                else:
+                    ds[elem.tag].value = new_values[0]
             except Exception as e:
                 print(f"Skipped {elem.tag} : {type(e).__name__}: {e}")
 
