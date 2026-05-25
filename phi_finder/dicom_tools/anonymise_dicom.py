@@ -446,6 +446,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
                     use_transformers: bool=False,
+                    gliner_pii: UniEncoderSpanGLiNER=None,
                     use_case: str='Standard') -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
 
@@ -473,6 +474,9 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
 
     use_transformers : bool, optional (default False)
         If True, transformers will be used for anonymisation on top of Presidio's output.
+    
+    gliner_pii: UniEncoderSpanGLiNER, optional (default False)
+        If set, the model will be used for anonymisation on top of Presidio's output.
 
     use_case : str, optional (default 'Standard')
         Standard: some fields are not redacted, only flagged.
@@ -495,10 +499,6 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     if anonymizer is None:
         anonymizer = AnonymizerEngine()
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
-    if use_transformers:
-        gliner_pii = _build_transformer()
-    else:
-        gliner_pii = None
 
     anonymised_headers = []
     _anonymise_ds(ds, analyser, anonymizer, score_threshold,
