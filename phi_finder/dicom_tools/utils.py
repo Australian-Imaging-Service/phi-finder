@@ -134,7 +134,6 @@ def deidentify_dicom_files(data_row: DataRow,
                                                              analyser=analyser,
                                                              anonymizer=anonymizer,
                                                              score_threshold=score_threshold,
-                                                             use_transformers=use_transformers,
                                                              use_case=use_case)
             if destroy_pixels:
                anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)

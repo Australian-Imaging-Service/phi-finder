@@ -360,7 +360,6 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   analyser: AnalyzerEngine,
                   anonymizer: AnonymizerEngine,
                   score_threshold: float,
-                  use_transformers: bool,
                   gliner_pii=None,
                   use_case: str='Standard',
                   anonymised_headers: list | None = None) -> None:
@@ -374,7 +373,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     continue
                 _anonymise_ds(
                     sub_ds, analyser, anonymizer, score_threshold,
-                    use_transformers, gliner_pii, use_case,
+                    gliner_pii, use_case,
                     anonymised_headers
                 )
         elif elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
@@ -427,7 +426,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         analyzer_results=analyzer_results,
                         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                     ).text
-                    if use_transformers and len(redacted) > 30:
+                    if gliner_pii and len(redacted) > 30:
                         redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold)
                     new_values.append(redacted)
                 if new_values != values:
@@ -445,7 +444,6 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     anonymizer: AnonymizerEngine=None,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
-                    use_transformers: bool=False,
                     gliner_pii: UniEncoderSpanGLiNER=None,
                     use_case: str='Standard') -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
@@ -471,9 +469,6 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     score_threshold : float, optional
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation. Default is 0.5.
-
-    use_transformers : bool, optional (default False)
-        If True, transformers will be used for anonymisation on top of Presidio's output.
     
     gliner_pii: UniEncoderSpanGLiNER, optional (default False)
         If set, the model will be used for anonymisation on top of Presidio's output.
@@ -502,7 +497,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
 
     anonymised_headers = []
     _anonymise_ds(ds, analyser, anonymizer, score_threshold,
-                  use_transformers, gliner_pii, use_case, anonymised_headers)
+                  gliner_pii, use_case, anonymised_headers)
     '''
     Adding a private header with the flagged headers list.
     private_block() reserves a slot (e.g., 0x10) and writes the creator name at (0x0209, 0x0010).

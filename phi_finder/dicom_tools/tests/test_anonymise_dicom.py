@@ -76,7 +76,7 @@ def test_anonymise_image():
                                                          anonymizer=None,
                                                          image_redactor=None,
                                                          score_threshold=0.5,
-                                                         use_transformers=False)
+                                                         gliner_pii=None)
     assert anonymised_dataset.PatientName == PersonName('XXXX')
     assert anonymised_dataset[0x0010, 0x0040].value != 'XXXX'  # Sex unchanged
     if anonymised_dataset[0x0010, 0x0030].value != '':
@@ -104,7 +104,7 @@ def test_anonymise_ds_recurses_into_sq():
         anonymizer=None,
         image_redactor=None,
         score_threshold=0.5,
-        use_transformers=False,
+        gliner_pii=None,
     )
 
     assert anonymised_dataset.PatientName == PersonName("XXXX")
