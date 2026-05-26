@@ -4,6 +4,8 @@ from pathlib import Path
 from frametree.core.row import DataRow
 from fileformats.medimage.dicom import DicomSeries
 from presidio_anonymizer import AnonymizerEngine
+from gliner import GLiNER
+from gliner.model import UniEncoderSpanGLiNER
 import pydicom
 
 from phi_finder.dicom_tools import anonymise_dicom
@@ -87,6 +89,10 @@ def deidentify_dicom_files(data_row: DataRow,
 
     analyser = anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
     anonymizer = AnonymizerEngine()
+    if use_transformers:
+        gliner_pii = anonymise_dicom._build_transformer()
+    else:
+        gliner_pii = None
 
     entries = list(data_row.entries_dict.items())
     for resource_path_key_order, entry in entries:
@@ -124,10 +130,10 @@ def deidentify_dicom_files(data_row: DataRow,
                 continue
             dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
+                                                             gliner_pii=gliner_pii,
                                                              analyser=analyser,
                                                              anonymizer=anonymizer,
                                                              score_threshold=score_threshold,
-                                                             use_transformers=use_transformers,
                                                              use_case=use_case)
             if destroy_pixels:
                anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
