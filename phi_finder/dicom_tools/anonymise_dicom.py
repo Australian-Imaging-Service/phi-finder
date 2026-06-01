@@ -306,7 +306,10 @@ def _build_transformer() -> UniEncoderSpanGLiNER:
     return model
 
 
-def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshold: float=0.01) -> str:
+def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
+                                text: str,
+                                threshold: float=0.01,
+                                return_entities: bool=False) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
 
     This function processes the input text through the provided NER pipeline,
@@ -320,13 +323,19 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshol
     text : str
         The input text to be anonymised.
 
+    threhsold: float, optional (default=0.5)
+        Confidence needed to flag an entity.
+
+    return_entities: bool, optional (default=False)
+        Whether to return a tuple with the entity types.
+
     Returns
     -------
     str
         The anonymised text with specified entities replaced by "[XXXX]".
     """
     LABELS = [
-        "age", "profession", "gender",
+        "age", "profession", "gender", "name",
         "sex", "language", "ethnicity",
         "country", "city", "state", "suburb",
         "location", "person", "organization",
@@ -351,8 +360,12 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER, text: str, threshol
                 merged.append((start, end))
         for start, end in reversed(merged):
             text = text[:start] + 'XXXX' + text[end:]
+        if return_entities:
+            labels_pred = sorted(e['label'] for e in pred_entities)
     except Exception as e:
         print(f"Error occurred while anonymising text: {e}")
+    if return_entities:
+        return text, labels_pred
     return text
 
 
@@ -406,7 +419,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             "UT",  # Unlimited Text
             #"DA",  # Date
             "CS",  # Code String
-            #"AS",  # Age String
+            "AS",  # Age String
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 original = elem.value
