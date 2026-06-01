@@ -274,6 +274,19 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         ],
     )
 
+    age_recognizer = PatternRecognizer(
+        supported_entity="AGE",
+        patterns=[
+            # DICOM Age String (AS): 057Y / 057 Y / 057D / 012M / 006W — all units, optional OCR space
+            Pattern(name="dicom_age", regex=r"\b\d{1,3}\s*[DWMY]\b", score=score_threshold),
+            # Labelled: "Age: 57", "Age 057Y", "AGE=89"
+            Pattern(name="labelled_age", regex=r"(?i)\bage\b\s*[:=]?\s*\d{1,3}\s*[dwmy]?\b", score=score_threshold),
+            # Suffixed: "57 yo", "57y/o", "57 yrs old"
+            Pattern(name="age_suffix", regex=r"(?i)\b\d{1,3}\s*(?:yo|y/?o|yrs?|years?\s*old)\b", score=score_threshold),
+        ],
+    )
+
+
     analyzer.registry.add_recognizer(title_recognizer)
     analyzer.registry.add_recognizer(correspondence_recognizer)
     analyzer.registry.add_recognizer(phone_recognizer)
@@ -286,6 +299,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
     analyzer.registry.add_recognizer(suburb_recognizer)
     analyzer.registry.add_recognizer(state_recognizer)
     analyzer.registry.add_recognizer(institute_recognizer)
+    analyzer.registry.add_recognizer(age_recognizer)
     return analyzer
 
 
@@ -500,12 +514,12 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     }
     add_private_dict_entries(private_creator="phi-finder", new_entries_dict=new_dict_items)
 
-    if image_redactor is not None:
-        ds = image_redactor.redact(ds, fill="contrast")  # fill="background")
     if analyser is None:
         analyser = _build_presidio_analyser(score_threshold)
     if anonymizer is None:
         anonymizer = AnonymizerEngine()
+    if image_redactor is not None:
+        ds = image_redactor.redact(ds, fill="contrast", score_threshold=score_threshold, ocr_kwargs={"config": "--psm 11 --oem 1"})  # fill="background") --psm 11 ("sparse text) 
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
 
     anonymised_headers = []
