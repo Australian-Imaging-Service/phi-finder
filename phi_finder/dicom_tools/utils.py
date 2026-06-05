@@ -111,7 +111,12 @@ def deidentify_dicom_files(data_row: DataRow,
             print(f"Skipping {resource_path} as it is a derivative.")
             _log_session(data_row, "debug-dump1", f"Skipping {resource_path} as it is a derivative.")
             continue
-        anonymised_resource_path = str(order_key) + '_' + resource_path.replace("/DICOM", "@deidentified")
+        #anonymised_resource_path = str(order_key) + '_' + resource_path.replace("/DICOM", "@deidentified")
+        scan_name, sep, _resource_label = resource_path.rpartition("/")
+        if not sep:
+            # No '/' in path: treat the whole string as the scan name
+            scan_name = resource_path
+        anonymised_resource_path = f"{order_key}_{scan_name}@deidentified"
 
         print(f"De-identifying {resource_path} to {anonymised_resource_path}.")
         _log_session(data_row, "debug-dump2", f"De-identifying {resource_path} to {anonymised_resource_path}.")
