@@ -394,7 +394,9 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
     if anonymised_headers is None:
         anonymised_headers = []
     for elem in ds:
-        if elem.VR == "SQ":
+        if elem.tag == (0x0028, 0x0004):
+            continue
+        elif elem.VR == "SQ":
             for sub_ds in elem.value:
                 if not isinstance(sub_ds, dicom.dataset.Dataset):
                     continue
