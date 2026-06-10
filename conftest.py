@@ -100,6 +100,54 @@ TEST_XNAT_DATASET_BLUEPRINTS = {
             ),
         ],
     ),
+    "with_secondary_capture": TestXnatDatasetBlueprint(
+        dim_lengths=[1, 1, 1],
+        scans=[
+            ScanBP(
+                name="fmap",
+                resources=[
+                    FileBP(
+                        path="DICOM",
+                        datatype=DicomSeries,
+                        filenames=[f"dicom/fmap/{i}.dcm" for i in range(1)],
+                    ),
+                ],
+            ),
+            ScanBP(
+                name="t1w",
+                resources=[
+                    FileBP(
+                        path="DICOM",
+                        datatype=DicomSeries,
+                        filenames=[f"dicom/t1w/{i}.dcm" for i in range(2)],
+                    ),
+                ],
+            ),
+            ScanBP(
+                name="dwi",
+                resources=[
+                    FileBP(
+                        path="DICOM",
+                        datatype=DicomSeries,
+                        filenames=[f"dicom/dwi/{i}.dcm" for i in range(3)],
+                    ),
+                ],
+            ),
+            # Mimics the "Patient Protocol" secondary capture from the
+            # production CT session that crashed the pipeline. The resource
+            # path is "secondary" rather than "DICOM".
+            ScanBP(
+                name="patient_protocol",
+                resources=[
+                    FileBP(
+                        path="secondary",
+                        datatype=DicomSeries,
+                        filenames=[f"dicom/fmap/{i}.dcm" for i in range(1)],
+                    ),
+                ],
+            ),
+        ],
+    ),
 }
 
 DATASETS = ["basic"]
@@ -129,6 +177,32 @@ def frameset(
 def data_row(frameset: FrameSet) -> DataRow:
     return frameset.row(frequency="session", id="visit0group0member0")
 
+@pytest.fixture(scope="function")
+def frameset_with_secondary(
+    xnat_repository: Xnat,
+    source_data: Path,
+    run_prefix: str,
+) -> FrameSet:
+    """Creates a dataset containing a secondary-capture-style scan
+    (resource label 'secondary' rather than 'DICOM')."""
+    blueprint = TEST_XNAT_DATASET_BLUEPRINTS["with_secondary_capture"]
+    project_id = (
+        run_prefix + "withsec" + str(hex(random.getrandbits(16)))[2:]
+    )
+    blueprint.make_dataset(
+        dataset_id=project_id,
+        store=xnat_repository,
+        source_data=source_data,
+        name="",
+    )
+    return xnat_repository.load_frameset(project_id, name="")
+
+
+@pytest.fixture(scope="function")
+def data_row_with_secondary(frameset_with_secondary: FrameSet) -> DataRow:
+    return frameset_with_secondary.row(
+        frequency="session", id="visit0group0member0"
+    )
 
 @pytest.fixture(scope="session")
 def xnat_repository(

@@ -10,6 +10,45 @@ def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
     assert isinstance(data_row, DataRow)
 
 
+def test_secondary_capture_resource_is_deidentified(
+    data_row_with_secondary: DataRow,
+):
+    """Regression test for the production crash on scan 501.
+
+    A 'secondary' scan (rather than 'DICOM')
+    should be deidentified successfully, with a well-formed output path.
+    """
+    utils.deidentify_dicom_files(
+        data_row_with_secondary,
+        score_threshold=0.5,
+        spacy_model_name="en_core_web_md",
+        destroy_pixels=True,
+        use_transformers=False,
+        dry_run=False,
+    )
+
+    keys = [
+        k[0] if isinstance(k, tuple) else k
+        for k in data_row_with_secondary.entries_dict.keys()
+    ]
+
+    # The secondary-capture scan should have a deidentified counterpart...
+    deid_for_secondary = [
+        k for k in keys
+        if "patient_protocol" in k and "@deidentified" in k
+    ]
+    assert deid_for_secondary, (
+        "Secondary-capture scan was not deidentified at all. "
+        f"Entries: {keys}"
+    )
+
+    # ...and its path must be well-formed (no '/secondary' tail leaking through).
+    for k in deid_for_secondary:
+        assert "/secondary" not in k, (
+            f"Malformed deidentified path: {k!r}. The '/secondary' resource "
+            "label should not appear in the deidentified entry name."
+        )
+
 def test_ingest_anonymised_dicom(data_row: DataRow):
     n_scans_before = utils._count_dicom_files(data_row, resource_path=None)
     assert n_scans_before == 6

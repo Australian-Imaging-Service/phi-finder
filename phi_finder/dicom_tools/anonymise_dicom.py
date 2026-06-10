@@ -3,11 +3,14 @@ import json
 import logging
 from datetime import datetime
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
+logger = logging.getLogger(__name__)
 
+import numpy as np
 import torch
 import torch.ao.quantization as taq
 import pydicom as dicom
 from pydicom.datadict import add_private_dict_entries
+from pydicom.tag import Tag
 from gliner import GLiNER
 from gliner.model import UniEncoderSpanGLiNER
 
@@ -34,11 +37,28 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
         The modified DICOM dataset with pixel data destroyed.
     """
     if "PixelData" in ds:
-        pixel_array = ds.pixel_array
-        pixel_array[:] = 0
-        data_downsampling = pixel_array[:8, :8]
-        ds.PixelData = data_downsampling.tobytes()
-        ds.Rows, ds.Columns = data_downsampling.shape
+        # Build the replacement pixels from scratch rather than decoding the
+        # originals, so compressed files work without any decode handlers.
+        bits = int(ds.get("BitsAllocated", 16) or 16)
+        bits = 8 if bits <= 8 else 16 if bits <= 16 else 32
+        signed = int(ds.get("PixelRepresentation", 0) or 0) == 1
+        zeros = np.zeros((8, 8), dtype=f"{'int' if signed else 'uint'}{bits}")
+        ds.PixelData = zeros.tobytes()
+        ds.Rows, ds.Columns = zeros.shape
+        ds.BitsAllocated = bits
+        ds.BitsStored = bits
+        ds.HighBit = bits - 1
+        ds.PixelRepresentation = 1 if signed else 0
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        for keyword in ("NumberOfFrames", "PlanarConfiguration"):
+            if keyword in ds:
+                del ds[keyword]
+        # The new PixelData is raw little-endian bytes, so the transfer syntax
+        # must be uncompressed regardless of how the source was encoded.
+        if getattr(ds, "file_meta", None) is None:
+            ds.file_meta = dicom.dataset.FileMetaDataset()
+        ds.file_meta.TransferSyntaxUID = dicom.uid.ExplicitVRLittleEndian
     return ds
 
 
@@ -109,7 +129,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         patterns=[
             Pattern(
                 name="phone",
-                regex=r"(\(+61\)|\+61|\(0[1-9]\)|0[1-9])?( ?-?[0-9]){8,14}",  # 8 to 14 digits
+                regex=r"(\(\+61\)|\+61|\(0[1-9]\)|0[1-9])?( ?-?[0-9]){8,14}",  # 8 to 14 digits
                 score=score_threshold,
             )
         ],
@@ -322,7 +342,7 @@ def _build_transformer() -> UniEncoderSpanGLiNER:
 
 def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
                                 text: str,
-                                threshold: float=0.01,
+                                threshold: float=0.15,
                                 return_entities: bool=False) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
 
@@ -337,7 +357,7 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
     text : str
         The input text to be anonymised.
 
-    threhsold: float, optional (default=0.5)
+    threhsold: float, optional (default=0.15)
         Confidence needed to flag an entity.
 
     return_entities: bool, optional (default=False)
@@ -358,10 +378,11 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
         "date of birth", "mobile phone number",
         "health insurance number",
     ]
-    # merged collapses overlapping entity spans into non-overlapping 
-    # ones so the slice-replacement at the end doesn't 
+    # merged collapses overlapping entity spans into non-overlapping
+    # ones so the slice-replacement at the end doesn't
     # double-redact or produce corrupted offsets.
     # e.g. "Dr John Smith" might be person (0–13) and profession (0–2).
+    labels_pred: list[str] = []
     try:
         with torch.inference_mode():
             pred_entities = model.predict_entities(text, LABELS, threshold=threshold)
@@ -374,13 +395,27 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
                 merged.append((start, end))
         for start, end in reversed(merged):
             text = text[:start] + 'XXXX' + text[end:]
-        if return_entities:
-            labels_pred = sorted(e['label'] for e in pred_entities)
+        labels_pred = sorted(e['label'] for e in pred_entities)
     except Exception as e:
-        print(f"Error occurred while anonymising text: {e}")
+        # Fail closed: if recognition errors out we cannot know what is PHI,
+        # so the whole text is redacted rather than passed through.
+        logger.error("Error while anonymising text, redacting it entirely: %s", e)
+        text = "XXXX"
     if return_entities:
         return text, labels_pred
     return text
+
+
+# Structural elements whose values are DICOM defined terms, not free text.
+# They must never be redacted: e.g. ImageType's magnitude component 'M' would
+# otherwise match the standalone-M/F gender pattern, corrupting the image.
+_STRUCTURAL_TAGS = frozenset({
+    Tag(0x0008, 0x0008),  # Image Type
+    Tag(0x0008, 0x0060),  # Modality
+    Tag(0x0018, 0x5100),  # Patient Position (e.g. HFS)
+    Tag(0x0020, 0x0020),  # Patient Orientation (components like 'F' for foot)
+    Tag(0x0028, 0x0004),  # Photometric Interpretation
+})
 
 
 def _anonymise_ds(ds: dicom.dataset.Dataset,
@@ -394,7 +429,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
     if anonymised_headers is None:
         anonymised_headers = []
     for elem in ds:
-        if elem.tag == (0x0028, 0x0004):
+        if elem.tag in _STRUCTURAL_TAGS:
             continue
         elif elem.VR == "SQ":
             for sub_ds in elem.value:
@@ -425,6 +460,11 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
             anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+        elif elem.VR == "AS":  # Age String: replace with a conformant sentinel
+            if str(elem.value).strip() in ("", "000Y"):
+                continue
+            ds[elem.tag].value = "000Y"
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -435,7 +475,6 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             "UT",  # Unlimited Text
             #"DA",  # Date
             "CS",  # Code String
-            "AS",  # Age String
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 original = elem.value
@@ -456,7 +495,9 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                     ).text
                     if gliner_pii and len(redacted) > 30:
-                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold)
+                        # GLiNER confidence is a different scale from Presidio
+                        # scores, so the tuned default threshold applies here.
+                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
                     new_values.append(redacted)
                 if new_values != values:
                     anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
@@ -465,7 +506,17 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 else:
                     ds[elem.tag].value = new_values[0]
             except Exception as e:
-                print(f"Skipped {elem.tag} : {type(e).__name__}: {e}")
+                # Fail closed: a value that could not be analysed may still
+                # contain PHI, so blank it rather than leave the original.
+                logger.error(
+                    "Failed to redact %s (%s), blanking it. %s: %s",
+                    elem.tag, elem.name, type(e).__name__, e,
+                )
+                try:
+                    ds[elem.tag].value = ""
+                except Exception:
+                    del ds[elem.tag]
+                anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
 
 
 def anonymise_image(ds: dicom.dataset.FileDataset,
@@ -512,7 +563,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         The anonymised DICOM.
     """
     new_dict_items = {
-        0x02091000: ('ST', '1', 'Flagged Headers PHI-Finder')  # Private tag to store the list of anonymised headers,
+        0x02091000: ('LT', '1', 'Flagged Headers PHI-Finder')  # Private tag to store the list of anonymised headers,
     }
     add_private_dict_entries(private_creator="phi-finder", new_entries_dict=new_dict_items)
 
@@ -535,5 +586,5 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     '''
     flagged_headers = json.dumps(anonymised_headers)
     block = ds.private_block(0x0209, "phi-finder", create=True)
-    block.add_new(0x00, 'ST', flagged_headers)  # 0x00 offset within block → maps to (0x0209, 0x1000)
+    block.add_new(0x00, 'LT', flagged_headers)  # 0x00 offset within block → maps to (0x0209, 0x1000)
     return ds

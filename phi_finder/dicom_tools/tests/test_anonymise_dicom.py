@@ -27,6 +27,98 @@ def test_destroy_pixels():
     assert all(v == 0 for v in anonymised_dataset.pixel_array.flatten())
 
 
+def test_destroy_pixels_compressed_source():
+    # RLE-compressed source: destroying pixels must not require decoding the
+    # originals, and the output must be readable as uncompressed data.
+    filename = get_testdata_files("MR_small_RLE.dcm")[0]
+    dataset = pydicom.dcmread(filename)
+    anonymised_dataset = anonymise_dicom.destroy_pixels(dataset)
+    assert anonymised_dataset.file_meta.TransferSyntaxUID == pydicom.uid.ExplicitVRLittleEndian
+    assert anonymised_dataset.pixel_array.shape == (8, 8)
+    assert not anonymised_dataset.pixel_array.any()
+
+
+def test_destroy_pixels_multiframe_colour_source():
+    filename = get_testdata_files("color3d_jpeg_baseline.dcm")[0]
+    dataset = pydicom.dcmread(filename)
+    assert int(dataset.NumberOfFrames) > 1
+    assert dataset.SamplesPerPixel == 3
+    anonymised_dataset = anonymise_dicom.destroy_pixels(dataset)
+    assert anonymised_dataset.pixel_array.shape == (8, 8)
+    assert not anonymised_dataset.pixel_array.any()
+    assert anonymised_dataset.SamplesPerPixel == 1
+    assert "NumberOfFrames" not in anonymised_dataset
+
+
+class _RaisingAnalyser:
+    def analyze(self, *args, **kwargs):
+        raise RuntimeError("boom")
+
+
+def test_anonymise_ds_fails_closed():
+    # If analysis errors out, the value must be blanked, not left as-is.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    original_patient_id = dataset.PatientID
+    assert original_patient_id != ""
+    anonymised_headers = []
+    anonymise_dicom._anonymise_ds(
+        dataset,
+        analyser=_RaisingAnalyser(),
+        anonymizer=anonymise_dicom.AnonymizerEngine(),
+        score_threshold=0.5,
+        anonymised_headers=anonymised_headers,
+    )
+    assert dataset.PatientID == ""
+    pid_tag_str = str(pydicom.tag.Tag(0x0010, 0x0020))
+    assert any(e["tag"] == pid_tag_str for e in anonymised_headers)
+
+
+class _RaisingModel:
+    def predict_entities(self, *args, **kwargs):
+        raise RuntimeError("boom")
+
+
+def test_anonymise_with_transformer_fails_closed():
+    text, labels = anonymise_dicom._anonymise_with_transformer(
+        _RaisingModel(), "John Doe, 42 Wallaby Way", return_entities=True
+    )
+    assert text == "XXXX"
+    assert labels == []
+
+
+def test_age_string_replaced_with_valid_sentinel():
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    dataset.PatientAge = "076Y"
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        analyser=None,
+        anonymizer=None,
+        image_redactor=None,
+        score_threshold=0.5,
+        gliner_pii=None,
+    )
+    assert anonymised_dataset.PatientAge == "000Y"
+    flagged = json.loads(anonymised_dataset[0x0209, 0x1000].value)
+    age_tag_str = str(pydicom.tag.Tag(0x0010, 0x1010))
+    assert any(e["tag"] == age_tag_str for e in flagged)
+
+
+def test_structural_cs_values_untouched():
+    # ImageType's magnitude component 'M' must survive the gender recognizer.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    dataset.ImageType = ["ORIGINAL", "PRIMARY", "M", "ND"]
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        analyser=None,
+        anonymizer=None,
+        image_redactor=None,
+        score_threshold=0.5,
+        gliner_pii=None,
+    )
+    assert list(anonymised_dataset.ImageType) == ["ORIGINAL", "PRIMARY", "M", "ND"]
+    assert anonymised_dataset.Modality == "CT"
+
+
 TEST_STRINGS_PII = ["John Doe",
                     "Jane Smith",
                     "Female",
@@ -87,7 +179,7 @@ def test_anonymise_image():
     #assert anonymised_dataset[0x0010, 0x1010].value == '000Y'  # Unchanged
     assert (0x02091000) in anonymised_dataset
     assert anonymised_dataset[0x0209, 0x1000].name == '[Flagged Headers PHI-Finder]'
-    assert anonymised_dataset[0x0209, 0x1000].VR == 'ST'
+    assert anonymised_dataset[0x0209, 0x1000].VR == 'LT'
     assert json.loads(anonymised_dataset[0x0209, 0x1000].value)
 
 

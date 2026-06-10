@@ -1,4 +1,5 @@
 import gc
+import tempfile
 from pathlib import Path
 
 from frametree.core.row import DataRow
@@ -111,7 +112,12 @@ def deidentify_dicom_files(data_row: DataRow,
             print(f"Skipping {resource_path} as it is a derivative.")
             _log_session(data_row, "debug-dump1", f"Skipping {resource_path} as it is a derivative.")
             continue
-        anonymised_resource_path = str(order_key) + '_' + resource_path.replace("/DICOM", "@deidentified")
+        #anonymised_resource_path = str(order_key) + '_' + resource_path.replace("/DICOM", "@deidentified")
+        scan_name, sep, _resource_label = resource_path.rpartition("/")
+        if not sep:
+            # No '/' in path: treat the whole string as the scan name
+            scan_name = resource_path
+        anonymised_resource_path = f"{order_key}_{scan_name}@deidentified"
 
         print(f"De-identifying {resource_path} to {anonymised_resource_path}.")
         _log_session(data_row, "debug-dump2", f"De-identifying {resource_path} to {anonymised_resource_path}.")
@@ -125,54 +131,57 @@ def deidentify_dicom_files(data_row: DataRow,
             continue
         _log_session(data_row, "debug-dump3", f"Files from the original scan entry were downloaded.")
 
-        # 2. Anonymising those files.
-        tmps_paths = []
-        for i, dicom in enumerate(dicom_series.contents):
-            gc.collect()
+        # 2. Anonymising those files. The temp dir is unique per entry and
+        # run, so concurrent pipelines cannot overwrite each other's files,
+        # and it is removed once the upload has completed.
+        with tempfile.TemporaryDirectory(prefix="phi-finder-") as tmp_dir:
+            tmps_paths = []
+            for i, dicom in enumerate(dicom_series.contents):
+                gc.collect()
+                dcm = pydicom.dcmread(dicom)
+                if dry_run:
+                    continue
+                anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
+                                                                 analyser=analyser,
+                                                                 anonymizer=anonymizer,
+                                                                 image_redactor=image_redactor,
+                                                                 score_threshold=score_threshold,
+                                                                 gliner_pii=gliner_pii,
+                                                                 use_case=use_case)
+                if destroy_pixels:
+                    anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
+                tmp_path = Path(tmp_dir) / f"anonymised{i}-tmp_{dicom.stem}.dcm"
+                anonymised_dcm.save_as(tmp_path)
+                tmps_paths.append(tmp_path)
+
             if dry_run:
+                _log_session(data_row, "debug-dump4", f"Files anonymised (dry-run).")
+            else:
+                _log_session(data_row, "debug-dump4", f"Files anonymised.")
+
+            # 3. Creating the deidentified entry if necessary.
+            entries_names = [x[0][0] for x in entries]  # x: ((name: str, order_key: str), entry: DataEntry)
+            if dry_run:
+                _log_session(data_row, "debug-dump6", f"Deidentified files uploaded (dry-run).")
                 continue
-            dcm = pydicom.dcmread(dicom)
-            anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
-                                                             analyser=analyser,
-                                                             anonymizer=anonymizer,
-                                                             image_redactor=image_redactor,
-                                                             score_threshold=score_threshold,
-                                                             gliner_pii=gliner_pii,
-                                                             use_case=use_case)
-            if destroy_pixels:
-               anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
-            tmp_path = Path(f"anonymised{i}-tmp_{dicom.stem}.dcm")
-            anonymised_dcm.save_as(tmp_path)
-            tmps_paths.append(tmp_path)
 
-        if dry_run:
-            _log_session(data_row, "debug-dump4", f"Files anonymised (dry-run).")
-        else:
-            _log_session(data_row, "debug-dump4", f"Files anonymised.")
+            if anonymised_resource_path in entries_names:
+                print(f"Re-using {anonymised_resource_path} that already exists.")
+                _log_session(data_row, "debug-dump5", f"Re-using {anonymised_resource_path} that already exists.")
+                index = entries_names.index(anonymised_resource_path)
+                anonymised_session_entry = entries[index][1]
+            else:
+                anonymised_session_entry = data_row.create_entry(
+                    anonymised_resource_path, datatype=DicomSeries, order_key=order_key
+                )
+                _log_session(data_row, "debug-dump5", f"Deidentified entry created.")
 
-        # 3. Creating the deidentified entry if necessary.
-        entries_names = [x[0][0] for x in entries]  # x: ((name: str, order_key: str), entry: DataEntry)
-        if dry_run:
-            _log_session(data_row, "debug-dump6", f"Deidentified files uploaded (dry-run).")
-            return
+            # 4. Creating a new DicomSeries object from the anonymised files.
+            anonymised_dcm_series = DicomSeries(tmps_paths)
 
-        if anonymised_resource_path in entries_names:
-            print(f"Re-using {anonymised_resource_path} that already exists.")
-            _log_session(data_row, "debug-dump5", f"Re-using {anonymised_resource_path} that already exists.")
-            index = entries_names.index(anonymised_resource_path)
-            anonymised_session_entry = entries[index][1]
-        else:
-            anonymised_session_entry = data_row.create_entry(
-                anonymised_resource_path, datatype=DicomSeries, order_key=order_key
-            )
-            _log_session(data_row, "debug-dump5", f"Deidentified entry created.")
-
-        # 4. Creating a new DicomSeries object from the anonymised files.
-        anonymised_dcm_series = DicomSeries(tmps_paths)
-
-        # 5. Uploading the anonymised files from the temp dir.
-        anonymised_session_entry.item = anonymised_dcm_series
-        _log_session(data_row, "debug-dump6", f"Deidentified files uploaded.")
+            # 5. Uploading the anonymised files from the temp dir.
+            anonymised_session_entry.item = anonymised_dcm_series
+            _log_session(data_row, "debug-dump6", f"Deidentified files uploaded.")
     return None
 
 
