@@ -475,7 +475,6 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             "UT",  # Unlimited Text
             #"DA",  # Date
             "CS",  # Code String
-            # "AS" (Age String) is handled by the dedicated branch above.
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 original = elem.value
@@ -498,7 +497,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     if gliner_pii and len(redacted) > 30:
                         # GLiNER confidence is a different scale from Presidio
                         # scores, so the tuned default threshold applies here.
-                        redacted = _anonymise_with_transformer(gliner_pii, redacted)
+                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
                     new_values.append(redacted)
                 if new_values != values:
                     anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
