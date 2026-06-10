@@ -184,8 +184,7 @@ def frameset_with_secondary(
     run_prefix: str,
 ) -> FrameSet:
     """Creates a dataset containing a secondary-capture-style scan
-    (resource label 'secondary' rather than 'DICOM'), to reproduce
-    the production crash on Patient Protocol scans."""
+    (resource label 'secondary' rather than 'DICOM')."""
     blueprint = TEST_XNAT_DATASET_BLUEPRINTS["with_secondary_capture"]
     project_id = (
         run_prefix + "withsec" + str(hex(random.getrandbits(16)))[2:]

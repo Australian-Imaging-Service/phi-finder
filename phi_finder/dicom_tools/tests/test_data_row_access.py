@@ -15,9 +15,8 @@ def test_secondary_capture_resource_is_deidentified(
 ):
     """Regression test for the production crash on scan 501.
 
-    A scan whose DICOM resource is labelled 'secondary' (rather than 'DICOM')
-    should be deidentified successfully, with a well-formed output path —
-    not a malformed one like 'patient_protocol/secondary'.
+    A 'secondary' scan (rather than 'DICOM')
+    should be deidentified successfully, with a well-formed output path.
     """
     utils.deidentify_dicom_files(
         data_row_with_secondary,

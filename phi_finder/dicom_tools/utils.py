@@ -134,9 +134,9 @@ def deidentify_dicom_files(data_row: DataRow,
         tmps_paths = []
         for i, dicom in enumerate(dicom_series.contents):
             gc.collect()
+            dcm = pydicom.dcmread(dicom)
             if dry_run:
                 continue
-            dcm = pydicom.dcmread(dicom)
             anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
                                                              analyser=analyser,
                                                              anonymizer=anonymizer,
@@ -159,7 +159,7 @@ def deidentify_dicom_files(data_row: DataRow,
         entries_names = [x[0][0] for x in entries]  # x: ((name: str, order_key: str), entry: DataEntry)
         if dry_run:
             _log_session(data_row, "debug-dump6", f"Deidentified files uploaded (dry-run).")
-            return
+            continue
 
         if anonymised_resource_path in entries_names:
             print(f"Re-using {anonymised_resource_path} that already exists.")
