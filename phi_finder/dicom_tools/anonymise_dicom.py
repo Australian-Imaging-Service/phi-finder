@@ -460,6 +460,11 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
             anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+        elif elem.VR == "AS":  # Age String: replace with a conformant sentinel
+            if str(elem.value).strip() in ("", "000Y"):
+                continue
+            ds[elem.tag].value = "000Y"
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -470,7 +475,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             "UT",  # Unlimited Text
             #"DA",  # Date
             "CS",  # Code String
-            #"AS",  # Age String
+            # "AS" (Age String) is handled by the dedicated branch above.
         ]:  # https://dicom.nema.org/medical/dicom/current/output/html/part05.html#table_6.2-1 and https://pydicom.github.io/pydicom/stable/guides/element_value_types.html
             try:
                 original = elem.value
@@ -491,7 +496,9 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                     ).text
                     if gliner_pii and len(redacted) > 30:
-                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold)
+                        # GLiNER confidence is a different scale from Presidio
+                        # scores, so the tuned default threshold applies here.
+                        redacted = _anonymise_with_transformer(gliner_pii, redacted)
                     new_values.append(redacted)
                 if new_values != values:
                     anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})

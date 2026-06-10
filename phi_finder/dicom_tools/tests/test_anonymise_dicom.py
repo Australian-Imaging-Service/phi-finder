@@ -86,6 +86,23 @@ def test_anonymise_with_transformer_fails_closed():
     assert labels == []
 
 
+def test_age_string_replaced_with_valid_sentinel():
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    dataset.PatientAge = "076Y"
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        analyser=None,
+        anonymizer=None,
+        image_redactor=None,
+        score_threshold=0.5,
+        gliner_pii=None,
+    )
+    assert anonymised_dataset.PatientAge == "000Y"
+    flagged = json.loads(anonymised_dataset[0x0209, 0x1000].value)
+    age_tag_str = str(pydicom.tag.Tag(0x0010, 0x1010))
+    assert any(e["tag"] == age_tag_str for e in flagged)
+
+
 def test_structural_cs_values_untouched():
     # ImageType's magnitude component 'M' must survive the gender recognizer.
     dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
