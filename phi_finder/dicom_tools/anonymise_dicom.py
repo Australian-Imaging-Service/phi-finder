@@ -453,7 +453,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
             anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
-        elif elem.VR == "AS":  # Age String: replace with a conformant sentinel
+        elif elem.VR == "AS":
             if str(elem.value).strip() in ("", "000Y"):
                 continue
             ds[elem.tag].value = "000Y"
@@ -488,8 +488,6 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                     ).text
                     if gliner_pii and len(redacted) > 30:
-                        # GLiNER confidence is a different scale from Presidio
-                        # scores, so the tuned default threshold applies here.
                         redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
                     new_values.append(redacted)
                 if new_values != values:
