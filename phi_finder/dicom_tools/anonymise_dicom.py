@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
-import torch.ao.quantization as taq
 import pydicom as dicom
 from pydicom.datadict import add_private_dict_entries
 from pydicom.tag import Tag
@@ -324,19 +323,13 @@ def _build_presidio_analyser(score_threshold: float=0.5,
 
 
 def _build_transformer() -> UniEncoderSpanGLiNER:
-    model = GLiNER.from_pretrained("nvidia/gliner-pii", max_length=384)
+    model = GLiNER.from_pretrained("nvidia/gliner-pii")#, max_length=384)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
     if torch.cuda.is_available():
         model.compile()
         torch.set_float32_matmul_precision('high')
-    else:
-        model = taq.quantize_dynamic(
-            model,
-            {torch.nn.Linear},  # quantize all Linear layers to INT8
-            dtype=torch.qint8,
-        )
     return model
 
 
