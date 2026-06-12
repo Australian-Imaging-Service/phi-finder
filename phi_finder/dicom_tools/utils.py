@@ -10,7 +10,7 @@ from gliner import GLiNER
 from gliner.model import UniEncoderSpanGLiNER
 import pydicom
 
-from phi_finder.dicom_tools import anonymise_dicom
+from phi_finder.dicom_tools import anonymise_dicom, ps3_15
 
 
 def _log_session(data_row: DataRow, key: str, message: str) -> None:
@@ -77,9 +77,12 @@ def deidentify_dicom_files(data_row: DataRow,
         If True, the function will not perform any changes, only log the actions that would be taken.
         Note that original DICOM files will still be loaded.
 
-    use_case : FUTURE USE str, optional (default 'Standard')
-        Standard: some fields are not redacted, only flagged.
-        Aggressive: all PII fields are redacted.
+    use_case : str, optional (default 'Standard')
+        PS3.15: headers are de-identified with the DICOM PS3.15 Annex E
+        Basic Application Level Confidentiality Profile; Presidio and GLiNER
+        are not used on the headers.
+        Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
+        Presidio NER pipeline (plus GLiNER if use_transformers) and redacted.
 
     Returns
     -------
@@ -89,14 +92,20 @@ def deidentify_dicom_files(data_row: DataRow,
     """
     _log_session(data_row, "debug-dump0", "Pipeline started")
 
-    analyser = anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
-    anonymizer = AnonymizerEngine()
+    # In the 'PS3.15' use case the headers are handled by the PS3.15 basic
+    # profile, so the NER engines are only needed for image redaction (if any).
+    ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
+    analyser = (
+        anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
+        if not ps3_15_mode or destroy_pixels is False else None
+    )
+    anonymizer = AnonymizerEngine() if not ps3_15_mode else None
     image_redactor = (
     DicomImageRedactorEngine(
             image_analyzer_engine=ImageAnalyzerEngine(analyzer_engine=analyser, image_preprocessor=ContrastSegmentedImageEnhancer())
         ) if destroy_pixels is False else None
     )
-    gliner_pii = anonymise_dicom._build_transformer() if use_transformers else None
+    gliner_pii = anonymise_dicom._build_transformer() if use_transformers and not ps3_15_mode else None
 
     entries = list(data_row.entries_dict.items())
     for resource_path_key_order, entry in entries:
