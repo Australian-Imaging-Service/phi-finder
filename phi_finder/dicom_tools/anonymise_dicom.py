@@ -550,6 +550,8 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         PS3.15: headers are de-identified with the DICOM PS3.15 Annex E
         Basic Application Level Confidentiality Profile; Presidio and GLiNER
         are not used on the headers.
+        PS3.15_Rtn. Pat.: as PS3.15, plus the Retain Patient Characteristics
+        Option, so patient characteristics (age, sex, weight, ...) are kept.
         Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
         Presidio NER pipeline (plus GLiNER when gliner_pii is given) and
         redacted.
@@ -578,7 +580,10 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
 
     anonymised_headers = []
     if ps3_15_mode:
-        ps3_15.apply_basic_profile(ds, anonymised_headers)
+        ps3_15.apply_basic_profile(
+            ds, anonymised_headers,
+            retain_patient_characteristics=ps3_15.retain_patient_characteristics(use_case),
+        )
     else:
         _anonymise_ds(ds, analyser, anonymizer, score_threshold,
                       gliner_pii, use_case, anonymised_headers)

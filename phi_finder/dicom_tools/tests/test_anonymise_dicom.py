@@ -245,13 +245,58 @@ def test_anonymise_image_ps3_15_use_case():
     assert any(e["tag"] == pn_tag_str for e in flagged)
 
 
+def test_anonymise_image_ps3_15_retain_patient_characteristics():
+    # The Retain Patient Characteristics variant keeps patient characteristics
+    # (age, sex, size, weight) while still removing direct identifiers.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    dataset.PatientAge = "076Y"
+    dataset.PatientSex = "F"
+    dataset.PatientWeight = "70"
+    dataset.PatientSize = "1.8"
+    dataset.PatientBirthDate = "19500101"
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        analyser=_RaisingAnalyser(),
+        anonymizer=None,
+        image_redactor=None,
+        score_threshold=0.5,
+        gliner_pii=None,
+        use_case="PS3.15_Rtn. Pat.",
+    )
+    # Patient characteristics retained.
+    assert anonymised_dataset.PatientAge == "076Y"
+    assert anonymised_dataset.PatientSex == "F"
+    assert str(anonymised_dataset.PatientWeight) == "70"
+    assert str(anonymised_dataset.PatientSize) == "1.8"
+    # Direct identifiers still removed/emptied.
+    assert str(anonymised_dataset.PatientName) == ""  # Z
+    assert anonymised_dataset.PatientBirthDate == ""  # Z
+    # The retain option is recorded in the method code sequence.
+    assert anonymised_dataset.PatientIdentityRemoved == "YES"
+    codes = [item.CodeValue for item in anonymised_dataset.DeidentificationMethodCodeSequence]
+    assert "113100" in codes  # Basic Application Confidentiality Profile
+    assert "113108" in codes  # Retain Patient Characteristics Option
+
+
 def test_is_ps3_15_use_case_matching():
     from phi_finder.dicom_tools import ps3_15
 
-    for value in ("PS3.15", "ps3.15", " PS3.15 ", "PS3_15", "ps3-15"):
+    for value in ("PS3.15", "ps3.15", " PS3.15 ", "PS3_15", "ps3-15",
+                  "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics"):
         assert ps3_15.is_ps3_15_use_case(value)
     for value in (None, "", "Aggressive", "Standard", "PS3.14"):
         assert not ps3_15.is_ps3_15_use_case(value)
+
+
+def test_retain_patient_characteristics_matching():
+    from phi_finder.dicom_tools import ps3_15
+
+    for value in ("PS3.15_Rtn. Pat.", "ps3.15 rtn pat",
+                  "PS3.15 Retain Patient Characteristics"):
+        assert ps3_15.retain_patient_characteristics(value)
+    # Plain PS3.15 and non-PS3.15 use cases do not retain.
+    for value in (None, "", "PS3.15", "ps3.15", "Standard"):
+        assert not ps3_15.retain_patient_characteristics(value)
 
 
 def test_ps3_15_uid_replacement_is_deterministic():

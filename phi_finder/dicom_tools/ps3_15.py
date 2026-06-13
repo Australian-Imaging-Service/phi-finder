@@ -20,6 +20,7 @@ than in this table: private attributes (odd group, X), Curve Data
 (60xx,4000, X).
 """
 import logging
+import re
 
 import pydicom as dicom
 from pydicom.uid import generate_uid
@@ -680,6 +681,36 @@ BASIC_PROFILE_ACTIONS: dict[int, str] = {
     0xFFFCFFFC: "X",  # Data Set Trailing Padding
 }
 
+# Tags the Retain Patient Characteristics Option (DCM code 113108) keeps,
+# overriding their Basic Profile action. Generated from the "Rtn. Pat. Chars.
+# Opt." column of Table E.1-1:
+# https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_E.html
+#
+# Only the "K" (keep) rows are listed: when the option is active these
+# attributes are left untouched instead of being removed/emptied, so clinically
+# useful, non-identifying patient characteristics (age, sex, weight, ...)
+# survive de-identification.
+#
+# The "C" (clean) rows of that column -- Allergies (0010,2110), Additional
+# Patient History (0010,21B0), Patient State (0038,0500), Pre-Medication
+# (0040,0012) -- are deliberately NOT kept here: "clean" means free-text PHI
+# must be scrubbed while preserving the clinical content, which the rule-based
+# PS3.15 path cannot do. They therefore fall back to their Basic Profile action
+# (removal), which is the safe choice.
+RETAIN_PATIENT_CHARACTERISTICS_KEEP: frozenset[int] = frozenset({
+    0x00100040,  # Patient's Sex            (Basic Z)
+    0x00101010,  # Patient's Age            (Basic X)
+    0x00101020,  # Patient's Size           (Basic X)
+    0x00101030,  # Patient's Weight         (Basic X)
+    0x00102160,  # Ethnic Group             (Basic X)
+    0x00102162,  # Ethnic Group(s)          (Basic X)
+    0x001021A0,  # Smoking Status           (Basic X)
+    0x001021C0,  # Pregnancy Status         (Basic X)
+    0x001021D0,  # Last Menstrual Date      (Basic X)
+    0x00102203,  # Patient's Sex Neutered   (Basic X/Z)
+    0x0072005F,  # Selector AS Value        (Basic D)
+})
+
 # VRs that hold raw bytes, for which the only safe dummy is an empty payload.
 _BINARY_VRS = frozenset({"OB", "OD", "OF", "OL", "OV", "OW", "UN"})
 
@@ -703,15 +734,36 @@ _DUMMY_VALUES = {
 }
 
 
+def _canon(use_case: str) -> str:
+    """Strips a use_case down to its alphanumerics, lower-cased, so all the
+    separator spellings ("PS3.15", "PS3_15", "PS3.15_Rtn. Pat.") collapse to a
+    canonical form ("ps315", "ps315rtnpat") that is easy to match against.
+    """
+    return re.sub(r"[^a-z0-9]", "", use_case.lower())
+
+
 def is_ps3_15_use_case(use_case: str | None) -> bool:
-    """True if the use_case string selects the PS3.15 basic profile.
+    """True if the use_case string selects a PS3.15 basic-profile variant.
 
     Matching is case-insensitive and tolerant of separator spelling, so
-    "PS3.15", "ps3.15", "PS3_15" and "PS3-15" all select it.
+    "PS3.15", "ps3.15", "PS3_15" and "PS3-15" all select the plain profile, and
+    the Retain Patient Characteristics variants ("PS3.15_Rtn. Pat.",
+    "PS3.15 Retain Patient Characteristics") select it too.
     """
     if use_case is None:
         return False
-    return use_case.strip().lower().replace("_", ".").replace("-", ".") == "ps3.15"
+    canon = _canon(use_case)
+    return canon == "ps315" or retain_patient_characteristics(use_case)
+
+
+def retain_patient_characteristics(use_case: str | None) -> bool:
+    """True if the use_case selects the PS3.15 Retain Patient Characteristics
+    Option (e.g. "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics").
+    """
+    if use_case is None:
+        return False
+    canon = _canon(use_case)
+    return canon.startswith("ps315rtn") or canon.startswith("ps315retain")
 
 
 def _resolve_action(action: str) -> str:
@@ -793,14 +845,19 @@ def _action_for(tag: dicom.tag.Tag) -> str | None:
     return None
 
 
-def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list) -> None:
+def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list,
+           retain_patient_characteristics: bool = False) -> None:
     for elem in list(ds):
+        # Retain Patient Characteristics Option: leave these attributes intact,
+        # overriding the Basic Profile action that would otherwise remove them.
+        if retain_patient_characteristics and int(elem.tag) in RETAIN_PATIENT_CHARACTERISTICS_KEEP:
+            continue
         action = _action_for(elem.tag)
         if action is None:
             if elem.VR == "SQ":
                 for item in elem.value:
                     if isinstance(item, dicom.dataset.Dataset):
-                        _apply(item, anonymised_headers)
+                        _apply(item, anonymised_headers, retain_patient_characteristics)
             continue
         record = {"tag": str(elem.tag), "name": elem.name}
         resolved = _resolve_action(action)
@@ -816,7 +873,7 @@ def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list) -> None:
                     # recurse into the items instead of rewriting the SQ.
                     for item in elem.value:
                         if isinstance(item, dicom.dataset.Dataset):
-                            _apply(item, anonymised_headers)
+                            _apply(item, anonymised_headers, retain_patient_characteristics)
                 else:
                     _replace_uids(elem)
             else:  # D
@@ -832,15 +889,26 @@ def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list) -> None:
         anonymised_headers.append(record)
 
 
+def _code_item(code_value: str, code_meaning: str) -> dicom.dataset.Dataset:
+    """Builds a DCM-scheme code item for De-identification Method Code Sequence."""
+    item = dicom.dataset.Dataset()
+    item.CodeValue = code_value
+    item.CodingSchemeDesignator = "DCM"
+    item.CodeMeaning = code_meaning
+    return item
+
+
 def apply_basic_profile(ds: dicom.dataset.Dataset,
-                        anonymised_headers: list | None = None) -> dicom.dataset.Dataset:
+                        anonymised_headers: list | None = None,
+                        retain_patient_characteristics: bool = False) -> dicom.dataset.Dataset:
     """De-identifies DICOM headers in-place per PS3.15 Annex E Basic Profile.
 
     Applies the Basic Application Level Confidentiality Profile actions from
     Table E.1-1 to every element (recursing into sequences), removes private
     attributes, curve and overlay data, and marks the dataset as
-    de-identified via Patient Identity Removed (0012,0062) and
-    De-identification Method (0012,0063).
+    de-identified via Patient Identity Removed (0012,0062),
+    De-identification Method (0012,0063) and De-identification Method Code
+    Sequence (0012,0064).
 
     Pixel data is not touched; burned-in PHI must be handled separately
     (e.g. with destroy_pixels or an image redactor).
@@ -854,6 +922,12 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
         If given, a record {"tag", "name"} is appended for every element an
         action was applied to.
 
+    retain_patient_characteristics : bool, optional (default False)
+        If True, applies the Retain Patient Characteristics Option (DCM code
+        113108) on top of the Basic Profile: the attributes in
+        RETAIN_PATIENT_CHARACTERISTICS_KEEP (age, sex, weight, ...) are left
+        intact instead of being removed.
+
     Returns
     -------
     pydicom.dataset.Dataset
@@ -861,9 +935,17 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
     """
     if anonymised_headers is None:
         anonymised_headers = []
-    _apply(ds, anonymised_headers)
+    _apply(ds, anonymised_headers, retain_patient_characteristics)
     ds.PatientIdentityRemoved = "YES"
-    ds.DeidentificationMethod = "PS3.15 E.1 Basic Application Level Confidentiality Profile"
+    method_codes = [_code_item("113100", "Basic Application Confidentiality Profile")]
+    # Deidentification Method (0012,0063) is VR LO (max 64 chars), so keep the
+    # text short; the full detail lives in the code sequence below.
+    if retain_patient_characteristics:
+        method_codes.append(_code_item("113108", "Retain Patient Characteristics Option"))
+        ds.DeidentificationMethod = "PS3.15 E.1 Basic Profile + Retain Patient Characteristics"
+    else:
+        ds.DeidentificationMethod = "PS3.15 E.1 Basic Application Level Confidentiality Profile"
+    ds.DeidentificationMethodCodeSequence = method_codes
     # Group 0002 lives in file_meta, outside the main dataset walk; keep the
     # Media Storage SOP Instance UID consistent with the replaced SOP Instance UID.
     if getattr(ds, "file_meta", None) is not None and "SOPInstanceUID" in ds:

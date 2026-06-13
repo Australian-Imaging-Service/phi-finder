@@ -81,6 +81,8 @@ def deidentify_dicom_files(data_row: DataRow,
         PS3.15: headers are de-identified with the DICOM PS3.15 Annex E
         Basic Application Level Confidentiality Profile; Presidio and GLiNER
         are not used on the headers.
+        PS3.15_Rtn. Pat.: as PS3.15, plus the Retain Patient Characteristics
+        Option, so patient characteristics (age, sex, weight, ...) are kept.
         Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
         Presidio NER pipeline (plus GLiNER if use_transformers) and redacted.
 
