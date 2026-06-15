@@ -60,3 +60,53 @@ anonymised_dcm = anonymise_dicom.anonymise_image(dcm,score_threshold=score_thres
 anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
 
 ```
+
+## De-identifying headers with the DICOM PS3.15 profile
+
+By default `anonymise_image` scans the header values with the Presidio NER
+pipeline (and GLiNER, when supplied). Passing `use_case="PS3.15"` instead
+de-identifies the headers with the DICOM
+[PS3.15 Annex E Basic Application Level Confidentiality Profile](https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_E.html).
+This applies the standard's per-attribute actions (empty, dummy, remove, or
+remap UIDs), records the de-identification in `DeidentificationMethod` /
+`DeidentificationMethodCodeSequence`, and sets `PatientIdentityRemoved` to
+`YES`. In this mode the NER engines are **not** run on the headers, so you do
+not need to build an `analyser`.
+
+```python
+import pydicom as dicom
+from phi_finder.dicom_tools import anonymise_dicom
+
+path = "/path/to/some/dicom.dcm"
+dcm = dicom.dcmread(path)
+anonymised_dcm = anonymise_dicom.anonymise_image(dcm, use_case="PS3.15")
+anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
+```
+
+### Retain Patient Characteristics
+
+Use `use_case="PS3.15_Rtn. Pat."` to apply the basic profile together with the
+PS3.15 *Retain Patient Characteristics* Option. Direct identifiers (patient
+name, birth date, etc.) are still removed, but patient characteristics such as
+age, sex, size, weight, ethnic group and smoking status are kept. The retain
+option is recorded in `DeidentificationMethodCodeSequence` (code `113108`).
+
+```python
+import pydicom as dicom
+from phi_finder.dicom_tools import anonymise_dicom
+
+path = "/path/to/some/dicom.dcm"
+dcm = dicom.dcmread(path)
+anonymised_dcm = anonymise_dicom.anonymise_image(dcm, use_case="PS3.15_Rtn. Pat.")
+anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
+```
+
+The `use_case` match is case-insensitive and tolerant of separator spelling, so
+`"PS3.15"`, `"ps3.15"`, `"PS3_15"` and `"PS3-15"` all select the plain profile,
+and `"PS3.15_Rtn. Pat."` or `"PS3.15 Retain Patient Characteristics"` select the
+retain variant. Any other value (e.g. `"Standard"`, the default, or
+`"Aggressive"`) falls back to the Presidio/GLiNER pipeline described above.
+
+> **Note:** `use_case` only controls how the **headers** are handled. Burned-in
+> pixel PHI is still redacted only when an `image_redactor` is passed, exactly
+> as in the examples above.
