@@ -681,34 +681,36 @@ BASIC_PROFILE_ACTIONS: dict[int, str] = {
     0xFFFCFFFC: "X",  # Data Set Trailing Padding
 }
 
-# Tags the Retain Patient Characteristics Option (DCM code 113108) keeps,
+# Tags the Retain Patient Characteristics Option keeps,
 # overriding their Basic Profile action. Generated from the "Rtn. Pat. Chars.
 # Opt." column of Table E.1-1:
 # https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_E.html
 #
 # Only the "K" (keep) rows are listed: when the option is active these
-# attributes are left untouched instead of being removed/emptied, so clinically
-# useful, non-identifying patient characteristics (age, sex, weight, ...)
-# survive de-identification.
+# attributes are left untouched.
 #
-# The "C" (clean) rows of that column -- Allergies (0010,2110), Additional
-# Patient History (0010,21B0), Patient State (0038,0500), Pre-Medication
-# (0040,0012) -- are deliberately NOT kept here: "clean" means free-text PHI
-# must be scrubbed while preserving the clinical content, which the rule-based
-# PS3.15 path cannot do. They therefore fall back to their Basic Profile action
-# (removal), which is the safe choice.
+# The "C" (clean) rows of that column -- Allergies (0010,2110), Sex Parameters
+# for Clinical Use Category Comment (0010,0042), Special Needs (0038,0050),
+# Patient State (0038,0500) and Pre-Medication (0040,0012) -- are deliberately
+# NOT kept here: "clean" means free-text PHI must be scrubbed while preserving
+# the clinical content, which the rule-based PS3.15 path cannot do. They
+# therefore fall back to their Basic Profile action (removal), which is the
+# safe choice.
 RETAIN_PATIENT_CHARACTERISTICS_KEEP: frozenset[int] = frozenset({
-    0x00100040,  # Patient's Sex            (Basic Z)
-    0x00101010,  # Patient's Age            (Basic X)
-    0x00101020,  # Patient's Size           (Basic X)
-    0x00101030,  # Patient's Weight         (Basic X)
-    0x00102160,  # Ethnic Group             (Basic X)
-    0x00102162,  # Ethnic Group(s)          (Basic X)
-    0x001021A0,  # Smoking Status           (Basic X)
-    0x001021C0,  # Pregnancy Status         (Basic X)
-    0x001021D0,  # Last Menstrual Date      (Basic X)
-    0x00102203,  # Patient's Sex Neutered   (Basic X/Z)
-    0x0072005F,  # Selector AS Value        (Basic D)
+    0x00100040,  # Patient's Sex                                  (Basic Z)
+    0x00100043,  # Sex Parameters for Clinical Use Cat. Sequence  (Basic X)
+    0x00100046,  # Sex Parameters for Clinical Use Cat. Code Seq. (Basic X)
+    0x00100047,  # Sex Parameters for Clinical Use Cat. Reference (Basic X)
+    0x00101010,  # Patient's Age                                  (Basic X)
+    0x00101020,  # Patient's Size                                 (Basic X)
+    0x00101030,  # Patient's Weight                               (Basic X)
+    0x00102160,  # Ethnic Group                                   (Basic X)
+    0x00102161,  # Ethnic Group Code Sequence                     (Basic X)
+    0x00102162,  # Ethnic Groups                                  (Basic X)
+    0x001021A0,  # Smoking Status                                 (Basic X)
+    0x001021C0,  # Pregnancy Status                               (Basic X)
+    0x00102203,  # Patient's Sex Neutered                         (Basic X/Z)
+    0x0072005F,  # Selector AS Value                              (Basic D)
 })
 
 # VRs that hold raw bytes, for which the only safe dummy is an empty payload.
@@ -923,8 +925,8 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
         action was applied to.
 
     retain_patient_characteristics : bool, optional (default False)
-        If True, applies the Retain Patient Characteristics Option (DCM code
-        113108) on top of the Basic Profile: the attributes in
+        If True, applies the Retain Patient Characteristics Option 
+        on top of the Basic Profile: the attributes in
         RETAIN_PATIENT_CHARACTERISTICS_KEEP (age, sex, weight, ...) are left
         intact instead of being removed.
 
