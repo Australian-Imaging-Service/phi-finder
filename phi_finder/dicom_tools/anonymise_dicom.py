@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
-import torch.ao.quantization as taq
 import pydicom as dicom
 from pydicom.datadict import add_private_dict_entries
 from pydicom.tag import Tag
@@ -21,6 +20,8 @@ from pydicom.valuerep import PersonName
 from presidio_anonymizer.entities import OperatorConfig
 from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
 from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+from phi_finder.dicom_tools import ps3_15
 
 
 def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
@@ -324,19 +325,13 @@ def _build_presidio_analyser(score_threshold: float=0.5,
 
 
 def _build_transformer() -> UniEncoderSpanGLiNER:
-    model = GLiNER.from_pretrained("nvidia/gliner-pii", max_length=384)
+    model = GLiNER.from_pretrained("nvidia/gliner-pii")#, max_length=384)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
     if torch.cuda.is_available():
         model.compile()
         torch.set_float32_matmul_precision('high')
-    else:
-        model = taq.quantize_dynamic(
-            model,
-            {torch.nn.Linear},  # quantize all Linear layers to INT8
-            dtype=torch.qint8,
-        )
     return model
 
 
@@ -460,7 +455,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
             anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
-        elif elem.VR == "AS":  # Age String: replace with a conformant sentinel
+        elif elem.VR == "AS":
             if str(elem.value).strip() in ("", "000Y"):
                 continue
             ds[elem.tag].value = "000Y"
@@ -495,8 +490,6 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
                     ).text
                     if gliner_pii and len(redacted) > 30:
-                        # GLiNER confidence is a different scale from Presidio
-                        # scores, so the tuned default threshold applies here.
                         redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
                     new_values.append(redacted)
                 if new_values != values:
@@ -554,8 +547,14 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         If set, the model will be used for anonymisation on top of Presidio's output.
 
     use_case : str, optional (default 'Standard')
-        Standard: some fields are not redacted, only flagged.
-        Aggressive: all PII fields are redacted.
+        PS3.15: headers are de-identified with the DICOM PS3.15 Annex E
+        Basic Application Level Confidentiality Profile; Presidio and GLiNER
+        are not used on the headers.
+        PS3.15_Rtn. Pat.: as PS3.15, plus the Retain Patient Characteristics
+        Option, so patient characteristics (age, sex, weight, ...) are kept.
+        Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
+        Presidio NER pipeline (plus GLiNER when gliner_pii is given) and
+        redacted.
 
     Returns
     -------
@@ -563,21 +562,31 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         The anonymised DICOM.
     """
     new_dict_items = {
-        0x02091000: ('LT', '1', 'Flagged Headers PHI-Finder')  # Private tag to store the list of anonymised headers,
+        # Private tag to store the list of anonymised headers. UT rather than
+        # LT because the list can exceed LT's 10240-character limit.
+        0x02091000: ('UT', '1', 'Flagged Headers PHI-Finder')
     }
     add_private_dict_entries(private_creator="phi-finder", new_entries_dict=new_dict_items)
 
-    if analyser is None:
-        analyser = _build_presidio_analyser(score_threshold)
-    if anonymizer is None:
-        anonymizer = AnonymizerEngine()
+    ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
+    if not ps3_15_mode:
+        if analyser is None:
+            analyser = _build_presidio_analyser(score_threshold)
+        if anonymizer is None:
+            anonymizer = AnonymizerEngine()
     if image_redactor is not None:
-        ds = image_redactor.redact(ds, fill="contrast", score_threshold=score_threshold, ocr_kwargs={"config": "--psm 11 --oem 1"})  # fill="background") --psm 11 ("sparse text) 
+        ds = image_redactor.redact(ds, fill="contrast", score_threshold=score_threshold, ocr_kwargs={"config": "--psm 11 --oem 1"})  # fill="background") --psm 11 ("sparse text)
     # operators = {"DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})}
 
     anonymised_headers = []
-    _anonymise_ds(ds, analyser, anonymizer, score_threshold,
-                  gliner_pii, use_case, anonymised_headers)
+    if ps3_15_mode:
+        ps3_15.apply_basic_profile(
+            ds, anonymised_headers,
+            retain_patient_characteristics=ps3_15.retain_patient_characteristics(use_case),
+        )
+    else:
+        _anonymise_ds(ds, analyser, anonymizer, score_threshold,
+                      gliner_pii, use_case, anonymised_headers)
     '''
     Adding a private header with the flagged headers list.
     private_block() reserves a slot (e.g., 0x10) and writes the creator name at (0x0209, 0x0010).
@@ -586,5 +595,5 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     '''
     flagged_headers = json.dumps(anonymised_headers)
     block = ds.private_block(0x0209, "phi-finder", create=True)
-    block.add_new(0x00, 'LT', flagged_headers)  # 0x00 offset within block → maps to (0x0209, 0x1000)
+    block.add_new(0x00, 'UT', flagged_headers)  # 0x00 offset within block → maps to (0x0209, 0x1000)
     return ds

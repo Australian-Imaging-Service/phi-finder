@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 import random
+import torch
 import xnat4tests
 import medimages4tests.dummy.dicom.mri.fmap.siemens.skyra.syngo_d13c
 import medimages4tests.dummy.dicom.mri.dwi.siemens.skyra.syngo_d13c
@@ -38,6 +39,12 @@ if os.getenv("_PYTEST_RAISE", "0") != "0":
     @pytest.hookimpl(tryfirst=True)
     def pytest_internalerror(excinfo: pytest.ExceptionInfo[BaseException]) -> None:
         raise excinfo.value
+
+
+@pytest.fixture(autouse=True)
+def force_cpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    yield
 
 
 @pytest.fixture(scope="session")
