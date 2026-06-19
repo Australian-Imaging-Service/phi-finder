@@ -282,7 +282,8 @@ def test_is_ps3_15_use_case_matching():
     from phi_finder.dicom_tools import ps3_15
 
     for value in ("PS3.15", "ps3.15", " PS3.15 ", "PS3_15", "ps3-15",
-                  "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics"):
+                  "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics",
+                  "dicom_default", "DICOM Default", "dicom_retain_patient"):
         assert ps3_15.is_ps3_15_use_case(value)
     for value in (None, "", "Aggressive", "Standard", "PS3.14"):
         assert not ps3_15.is_ps3_15_use_case(value)
@@ -292,10 +293,11 @@ def test_retain_patient_characteristics_matching():
     from phi_finder.dicom_tools import ps3_15
 
     for value in ("PS3.15_Rtn. Pat.", "ps3.15 rtn pat",
-                  "PS3.15 Retain Patient Characteristics"):
+                  "PS3.15 Retain Patient Characteristics",
+                  "dicom_retain_patient", "dicom_retain_patient_characteristics"):
         assert ps3_15.retain_patient_characteristics(value)
     # Plain PS3.15 and non-PS3.15 use cases do not retain.
-    for value in (None, "", "PS3.15", "ps3.15", "Standard"):
+    for value in (None, "", "PS3.15", "ps3.15", "Standard", "dicom_default"):
         assert not ps3_15.retain_patient_characteristics(value)
 
 

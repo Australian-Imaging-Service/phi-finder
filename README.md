@@ -64,7 +64,8 @@ anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
 ## De-identifying headers with the DICOM PS3.15 profile
 
 By default `anonymise_image` scans the header values with the Presidio NER
-pipeline (and GLiNER, when supplied). Passing `use_case="PS3.15"` instead
+pipeline (and GLiNER, when supplied). Passing `use_case="PS3.15"` (or its
+friendlier alias `use_case="dicom_default"`) instead
 de-identifies the headers with the DICOM
 [PS3.15 Annex E Basic Application Level Confidentiality Profile](https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_E.html).
 This applies the standard's per-attribute actions (empty, dummy, remove, or
@@ -85,7 +86,8 @@ anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
 
 ### Retain Patient Characteristics
 
-Use `use_case="PS3.15_Rtn. Pat."` to apply the basic profile together with the
+Use `use_case="PS3.15_Rtn. Pat."` (or its friendlier alias
+`use_case="dicom_retain_patient"`) to apply the basic profile together with the
 PS3.15 *Retain Patient Characteristics* Option. Direct identifiers (patient
 name, birth date, etc.) are still removed, but patient characteristics such as
 age, sex, size, weight, ethnic group and smoking status are kept. The retain
@@ -102,9 +104,10 @@ anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
 ```
 
 The `use_case` match is case-insensitive and tolerant of separator spelling, so
-`"PS3.15"`, `"ps3.15"`, `"PS3_15"` and `"PS3-15"` all select the plain profile,
-and `"PS3.15_Rtn. Pat."` or `"PS3.15 Retain Patient Characteristics"` select the
-retain variant. Any other value (e.g. `"Standard"`, the default, or
+`"PS3.15"`, `"ps3.15"`, `"PS3_15"`, `"PS3-15"` and the alias `"dicom_default"`
+all select the plain profile, and `"PS3.15_Rtn. Pat."`,
+`"PS3.15 Retain Patient Characteristics"` or the alias `"dicom_retain_patient"`
+select the retain variant. Any other value (e.g. `"Standard"`, the default, or
 `"Aggressive"`) falls back to the Presidio/GLiNER pipeline described above.
 
 > **Note:** `use_case` only controls how the **headers** are handled. Burned-in

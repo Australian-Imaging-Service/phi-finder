@@ -751,21 +751,29 @@ def is_ps3_15_use_case(use_case: str | None) -> bool:
     "PS3.15", "ps3.15", "PS3_15" and "PS3-15" all select the plain profile, and
     the Retain Patient Characteristics variants ("PS3.15_Rtn. Pat.",
     "PS3.15 Retain Patient Characteristics") select it too.
+
+    The friendlier aliases "dicom_default" (plain profile) and
+    "dicom_retain_patient" (retain variant) are accepted as well.
     """
     if use_case is None:
         return False
     canon = _canon(use_case)
-    return canon == "ps315" or retain_patient_characteristics(use_case)
+    return canon in ("ps315", "dicomdefault") or retain_patient_characteristics(use_case)
 
 
 def retain_patient_characteristics(use_case: str | None) -> bool:
     """True if the use_case selects the PS3.15 Retain Patient Characteristics
-    Option (e.g. "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics").
+    Option (e.g. "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics",
+    or the friendlier alias "dicom_retain_patient").
     """
     if use_case is None:
         return False
     canon = _canon(use_case)
-    return canon.startswith("ps315rtn") or canon.startswith("ps315retain")
+    return (
+        canon.startswith("ps315rtn")
+        or canon.startswith("ps315retain")
+        or canon.startswith("dicomretain")
+    )
 
 
 def _resolve_action(action: str) -> str:
