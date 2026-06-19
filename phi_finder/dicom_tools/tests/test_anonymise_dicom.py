@@ -301,6 +301,58 @@ def test_retain_patient_characteristics_matching():
         assert not ps3_15.retain_patient_characteristics(value)
 
 
+def test_scan_private_headers_matching():
+    from phi_finder.dicom_tools import ps3_15
+
+    # The scan-private variants are still PS3.15 use cases, and the base variant
+    # (plain vs retain) is still detected through the suffix.
+    for value in ("dicom_default_scan_private",
+                  "dicom_retain_patient_scan_private",
+                  "PS3.15_scan_private"):
+        assert ps3_15.scan_private_headers(value)
+        assert ps3_15.is_ps3_15_use_case(value)
+    assert ps3_15.retain_patient_characteristics("dicom_retain_patient_scan_private")
+    assert not ps3_15.retain_patient_characteristics("dicom_default_scan_private")
+    # Non scan-private PS3.15 use cases and non-PS3.15 use cases are not
+    # scan-private (the suffix only counts on a PS3.15 base).
+    for value in (None, "", "dicom_default", "PS3.15", "Standard",
+                  "standard_scan_private"):
+        assert not ps3_15.scan_private_headers(value)
+
+
+def test_anonymise_image_scan_private_keeps_and_scrubs_private():
+    # dicom_default_scan_private: standard headers follow the Basic Profile,
+    # but private attributes are kept and NER-scrubbed instead of removed.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    # A name is used as the private creator too, so the test exercises the guard
+    # that keeps private creators intact (scrubbing one would corrupt the block).
+    block = dataset.private_block(0x0011, "John Doe", create=True)
+    block.add_new(0x01, "LO", "Jane Smith")
+    priv_tag = block.get_tag(0x01)
+    creator_tag = pydicom.tag.Tag(priv_tag.group, priv_tag.element >> 8)
+
+    anonymised = anonymise_dicom.anonymise_image(
+        dataset, use_case="dicom_default_scan_private"
+    )
+
+    # Standard headers are still de-identified by the Basic Profile.
+    assert str(anonymised.PatientName) == ""  # Z
+    assert anonymised.PatientIdentityRemoved == "YES"
+    # The private data element is kept (not removed) but its PHI is scrubbed.
+    assert priv_tag in anonymised
+    assert "Jane Smith" not in str(anonymised[priv_tag].value)
+    assert "XXXX" in str(anonymised[priv_tag].value)
+    # The private creator is left intact so the block mapping survives.
+    assert str(anonymised[creator_tag].value) == "John Doe"
+
+    # Contrast: the plain profile removes private attributes entirely.
+    plain = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    pblock = plain.private_block(0x0011, "John Doe", create=True)
+    pblock.add_new(0x01, "LO", "Jane Smith")
+    plain_anon = anonymise_dicom.anonymise_image(plain, use_case="dicom_default")
+    assert pblock.get_tag(0x01) not in plain_anon
+
+
 def test_ps3_15_uid_replacement_is_deterministic():
     # The same original UID must always map to the same replacement so that
     # Study/Series UIDs stay consistent across the files of a series.
