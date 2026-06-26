@@ -744,6 +744,24 @@ def _canon(use_case: str) -> str:
     return re.sub(r"[^a-z0-9]", "", use_case.lower())
 
 
+# Canonical suffix that turns a PS3.15 use_case into its "scan private headers"
+# variant: the Basic Profile still governs the standard headers, but private
+# attributes are kept and run through the Presidio/GLiNER pipeline instead of
+# being removed. See scan_private_headers().
+_SCAN_PRIVATE_SUFFIX = "scanprivate"
+
+
+def _base_canon(use_case: str) -> str:
+    """Canonicalises use_case and strips the trailing scan-private suffix, so the
+    base-profile predicates match the same whether or not the "..._scan_private"
+    variant was requested.
+    """
+    canon = _canon(use_case)
+    if canon.endswith(_SCAN_PRIVATE_SUFFIX):
+        canon = canon[: -len(_SCAN_PRIVATE_SUFFIX)]
+    return canon
+
+
 def is_ps3_15_use_case(use_case: str | None) -> bool:
     """True if the use_case string selects a PS3.15 basic-profile variant.
 
@@ -751,21 +769,47 @@ def is_ps3_15_use_case(use_case: str | None) -> bool:
     "PS3.15", "ps3.15", "PS3_15" and "PS3-15" all select the plain profile, and
     the Retain Patient Characteristics variants ("PS3.15_Rtn. Pat.",
     "PS3.15 Retain Patient Characteristics") select it too.
+
+    The friendlier aliases "dicom_default" (plain profile) and
+    "dicom_retain_patient" (retain variant) are accepted as well, as are their
+    "..._scan_private" variants (see scan_private_headers()).
     """
     if use_case is None:
         return False
-    canon = _canon(use_case)
-    return canon == "ps315" or retain_patient_characteristics(use_case)
+    canon = _base_canon(use_case)
+    return canon in ("ps315", "dicomdefault") or retain_patient_characteristics(use_case)
 
 
 def retain_patient_characteristics(use_case: str | None) -> bool:
     """True if the use_case selects the PS3.15 Retain Patient Characteristics
-    Option (e.g. "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics").
+    Option (e.g. "PS3.15_Rtn. Pat.", "PS3.15 Retain Patient Characteristics",
+    or the friendlier alias "dicom_retain_patient").
+
+    Also true for the "..._scan_private" variant, which keeps the same standard-
+    header treatment.
     """
     if use_case is None:
         return False
-    canon = _canon(use_case)
-    return canon.startswith("ps315rtn") or canon.startswith("ps315retain")
+    canon = _base_canon(use_case)
+    return (
+        canon.startswith("ps315rtn")
+        or canon.startswith("ps315retain")
+        or canon.startswith("dicomretain")
+    )
+
+
+def scan_private_headers(use_case: str | None) -> bool:
+    """True if the use_case selects a PS3.15 variant that keeps private
+    attributes and scans them with the Presidio/GLiNER pipeline, instead of
+    removing them as the Basic Profile does (e.g. "dicom_default_scan_private",
+    "dicom_retain_patient_scan_private").
+
+    Standard headers are still governed by the Basic Profile (plus the Retain
+    Patient Characteristics Option when the base variant selects it).
+    """
+    if use_case is None:
+        return False
+    return _canon(use_case).endswith(_SCAN_PRIVATE_SUFFIX) and is_ps3_15_use_case(use_case)
 
 
 def _resolve_action(action: str) -> str:
@@ -834,12 +878,14 @@ def _replace_uids(elem: dicom.dataelem.DataElement) -> None:
         elem.value = _replace_uid(str(value))
 
 
-def _action_for(tag: dicom.tag.Tag) -> str | None:
+def _action_for(tag: dicom.tag.Tag, scan_private: bool = False) -> str | None:
     action = BASIC_PROFILE_ACTIONS.get(int(tag))
     if action is not None:
         return action
     if tag.is_private:
-        return "X"
+        # In scan-private mode private attributes are left for the NER pipeline
+        # to scrub, so report "no action" instead of removing them outright.
+        return None if scan_private else "X"
     if (tag.group & 0xFF00) == 0x5000:  # Curve Data (50xx,xxxx)
         return "X"
     if (tag.group & 0xFF00) == 0x6000 and tag.element in (0x3000, 0x4000):
@@ -848,18 +894,19 @@ def _action_for(tag: dicom.tag.Tag) -> str | None:
 
 
 def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list,
-           retain_patient_characteristics: bool = False) -> None:
+           retain_patient_characteristics: bool = False,
+           scan_private: bool = False) -> None:
     for elem in list(ds):
         # Retain Patient Characteristics Option: leave these attributes intact,
         # overriding the Basic Profile action that would otherwise remove them.
         if retain_patient_characteristics and int(elem.tag) in RETAIN_PATIENT_CHARACTERISTICS_KEEP:
             continue
-        action = _action_for(elem.tag)
+        action = _action_for(elem.tag, scan_private)
         if action is None:
             if elem.VR == "SQ":
                 for item in elem.value:
                     if isinstance(item, dicom.dataset.Dataset):
-                        _apply(item, anonymised_headers, retain_patient_characteristics)
+                        _apply(item, anonymised_headers, retain_patient_characteristics, scan_private)
             continue
         record = {"tag": str(elem.tag), "name": elem.name}
         resolved = _resolve_action(action)
@@ -875,7 +922,7 @@ def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list,
                     # recurse into the items instead of rewriting the SQ.
                     for item in elem.value:
                         if isinstance(item, dicom.dataset.Dataset):
-                            _apply(item, anonymised_headers, retain_patient_characteristics)
+                            _apply(item, anonymised_headers, retain_patient_characteristics, scan_private)
                 else:
                     _replace_uids(elem)
             else:  # D
@@ -902,7 +949,8 @@ def _code_item(code_value: str, code_meaning: str) -> dicom.dataset.Dataset:
 
 def apply_basic_profile(ds: dicom.dataset.Dataset,
                         anonymised_headers: list | None = None,
-                        retain_patient_characteristics: bool = False) -> dicom.dataset.Dataset:
+                        retain_patient_characteristics: bool = False,
+                        scan_private: bool = False) -> dicom.dataset.Dataset:
     """De-identifies DICOM headers in-place per PS3.15 Annex E Basic Profile.
 
     Applies the Basic Application Level Confidentiality Profile actions from
@@ -925,10 +973,15 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
         action was applied to.
 
     retain_patient_characteristics : bool, optional (default False)
-        If True, applies the Retain Patient Characteristics Option 
+        If True, applies the Retain Patient Characteristics Option
         on top of the Basic Profile: the attributes in
         RETAIN_PATIENT_CHARACTERISTICS_KEEP (age, sex, weight, ...) are left
         intact instead of being removed.
+
+    scan_private : bool, optional (default False)
+        If True, private attributes are left in place rather than removed, so a
+        caller can scan them with the NER pipeline afterwards. The Basic
+        Profile actions for standard attributes are unchanged.
 
     Returns
     -------
@@ -937,7 +990,7 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
     """
     if anonymised_headers is None:
         anonymised_headers = []
-    _apply(ds, anonymised_headers, retain_patient_characteristics)
+    _apply(ds, anonymised_headers, retain_patient_characteristics, scan_private)
     ds.PatientIdentityRemoved = "YES"
     method_codes = [_code_item("113100", "Basic Application Confidentiality Profile")]
     # Deidentification Method (0012,0063) is VR LO (max 64 chars), so keep the

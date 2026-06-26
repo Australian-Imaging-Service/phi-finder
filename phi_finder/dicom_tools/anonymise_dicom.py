@@ -419,23 +419,36 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   score_threshold: float,
                   gliner_pii=None,
                   use_case: str='Standard',
-                  anonymised_headers: list | None = None) -> None:
-    """Recursively anonymises all elements in a DICOM dataset in-place."""
+                  anonymised_headers: list | None = None,
+                  private_only: bool = False) -> None:
+    """Recursively anonymises all elements in a DICOM dataset in-place.
+
+    When ``private_only`` is True, only private attributes have their values
+    scanned/redacted; standard attributes are left untouched (the caller has
+    already de-identified them, e.g. via the PS3.15 Basic Profile). Sequences
+    are still recursed into so private attributes nested inside them are reached.
+    """
     if anonymised_headers is None:
         anonymised_headers = []
     for elem in ds:
         if elem.tag in _STRUCTURAL_TAGS:
             continue
-        elif elem.VR == "SQ":
+        if elem.VR == "SQ":
             for sub_ds in elem.value:
                 if not isinstance(sub_ds, dicom.dataset.Dataset):
                     continue
                 _anonymise_ds(
                     sub_ds, analyser, anonymizer, score_threshold,
                     gliner_pii, use_case,
-                    anonymised_headers
+                    anonymised_headers, private_only
                 )
-        elif elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
+            continue
+        if private_only and (not elem.tag.is_private or elem.tag.is_private_creator):
+            # Only scrub private data elements; leave standard attributes (the
+            # caller already handled them) and private creators (scrubbing them
+            # would corrupt the block's creator-to-data mapping) untouched.
+            continue
+        if elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
             anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
         elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
@@ -547,11 +560,16 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         If set, the model will be used for anonymisation on top of Presidio's output.
 
     use_case : str, optional (default 'Standard')
-        PS3.15: headers are de-identified with the DICOM PS3.15 Annex E
-        Basic Application Level Confidentiality Profile; Presidio and GLiNER
-        are not used on the headers.
-        PS3.15_Rtn. Pat.: as PS3.15, plus the Retain Patient Characteristics
-        Option, so patient characteristics (age, sex, weight, ...) are kept.
+        PS3.15 (alias 'dicom_default'): headers are de-identified with the
+        DICOM PS3.15 Annex E Basic Application Level Confidentiality Profile;
+        Presidio and GLiNER are not used on the headers.
+        PS3.15_Rtn. Pat. (alias 'dicom_retain_patient'): as PS3.15, plus the
+        Retain Patient Characteristics Option, so patient characteristics
+        (age, sex, weight, ...) are kept.
+        'dicom_default_scan_private' / 'dicom_retain_patient_scan_private': as
+        the matching PS3.15 variant for the standard headers, but private
+        attributes are kept and scanned with the Presidio/GLiNER pipeline
+        instead of being removed.
         Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
         Presidio NER pipeline (plus GLiNER when gliner_pii is given) and
         redacted.
@@ -569,7 +587,10 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     add_private_dict_entries(private_creator="phi-finder", new_entries_dict=new_dict_items)
 
     ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
-    if not ps3_15_mode:
+    scan_private = ps3_15.scan_private_headers(use_case)
+    # The NER engines are needed for the full pipeline and for the private-header
+    # scan that the "..._scan_private" PS3.15 variants run on top of the profile.
+    if not ps3_15_mode or scan_private:
         if analyser is None:
             analyser = _build_presidio_analyser(score_threshold)
         if anonymizer is None:
@@ -583,7 +604,14 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         ps3_15.apply_basic_profile(
             ds, anonymised_headers,
             retain_patient_characteristics=ps3_15.retain_patient_characteristics(use_case),
+            scan_private=scan_private,
         )
+        if scan_private:
+            # Private attributes were kept by the profile; scrub PHI from their
+            # values with the NER pipeline instead of removing them outright.
+            _anonymise_ds(ds, analyser, anonymizer, score_threshold,
+                          gliner_pii, use_case, anonymised_headers,
+                          private_only=True)
     else:
         _anonymise_ds(ds, analyser, anonymizer, score_threshold,
                       gliner_pii, use_case, anonymised_headers)
