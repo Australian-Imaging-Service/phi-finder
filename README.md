@@ -74,18 +74,13 @@ The `use_case` argument selects how header values are de-identified:
 | `"dicom_retain_patient_scan_private"` | PS3.15 Basic Profile | NER-scrubbed (kept) | Kept (age, sex, size, weight, …) |
 
 Matching is case-insensitive and separator-tolerant (see the note at the end of
-this section). Each option is described in detail below.
+this section).
 
 By default `anonymise_image` scans the header values with the Presidio NER
 pipeline (and GLiNER, when supplied). Passing `use_case="PS3.15"` (or its
 friendlier alias `use_case="dicom_default"`) instead
 de-identifies the headers with the DICOM
-[PS3.15 Annex E Basic Application Level Confidentiality Profile](https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_E.html).
-This applies the standard's per-attribute actions (empty, dummy, remove, or
-remap UIDs), records the de-identification in `DeidentificationMethod` /
-`DeidentificationMethodCodeSequence`, and sets `PatientIdentityRemoved` to
-`YES`. In this mode the NER engines are **not** run on the headers, so you do
-not need to build an `analyser`.
+[PS3.15 Annex E Basic Application Level Confidentiality Profile](https://dicom.nema.org/medical/dicom/current/output/chtml/part15/chapter_E.html). In this mode the NER engines are **not** run on the headers.
 
 ```python
 import pydicom as dicom
@@ -103,8 +98,7 @@ Use `use_case="PS3.15_Rtn. Pat."` (or its friendlier alias
 `use_case="dicom_retain_patient"`) to apply the basic profile together with the
 PS3.15 *Retain Patient Characteristics* Option. Direct identifiers (patient
 name, birth date, etc.) are still removed, but patient characteristics such as
-age, sex, size, weight, ethnic group and smoking status are kept. The retain
-option is recorded in `DeidentificationMethodCodeSequence` (code `113108`).
+age, sex, size, weight, ethnic group and smoking status are kept.
 
 ```python
 import pydicom as dicom
@@ -123,9 +117,7 @@ Both DICOM modes have a `_scan_private` variant —
 `use_case="dicom_retain_patient_scan_private"`. The standard headers are handled
 exactly as in the matching profile above, but instead of **removing** private
 attributes (the Basic Profile default), they are **kept** and their text values
-are scanned with the Presidio/GLiNER pipeline. This preserves potentially useful
-vendor/clinical private data while still scrubbing any PHI from it. Non-text
-private attributes (binary or numeric) are left as-is.
+are scanned with the Presidio/GLiNER pipeline.
 
 ```python
 import pydicom as dicom
