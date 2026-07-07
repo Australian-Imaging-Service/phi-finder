@@ -6,7 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 from frametree.core.row import DataRow
+from frametree.core.entry import DataEntry
 from fileformats.medimage.dicom import DicomSeries
+from fileformats.generic import File
 from presidio_anonymizer import AnonymizerEngine
 from presidio_image_redactor import DicomImageRedactorEngine, ImageAnalyzerEngine, ContrastSegmentedImageEnhancer
 from gliner import GLiNER
@@ -117,6 +119,10 @@ def deidentify_dicom_files(data_row: DataRow,
     )
     gliner_pii = anonymise_dicom._build_transformer() if use_transformers and not ps3_15_mode else None
 
+    # Accumulated across every scan/slice in the session to build one report.
+    report_headers = []
+    n_images = 0
+
     entries = list(data_row.entries_dict.items())
     for resource_path_key_order, entry in entries:
         gc.collect()
@@ -167,6 +173,8 @@ def deidentify_dicom_files(data_row: DataRow,
                                                                  score_threshold=score_threshold,
                                                                  gliner_pii=gliner_pii,
                                                                  use_case=use_case)
+                report_headers.extend(read_flagged_headers(anonymised_dcm))
+                n_images += 1
                 if destroy_pixels:
                     anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
                 tmp_path = Path(tmp_dir) / f"anonymised{i}-tmp_{dicom.stem}.dcm"
@@ -201,6 +209,15 @@ def deidentify_dicom_files(data_row: DataRow,
             # 5. Uploading the anonymised files from the temp dir.
             anonymised_session_entry.item = anonymised_dcm_series
             _log_session(data_row, "debug-dump6", f"Deidentified files uploaded.")
+
+    # 6. Building and uploading de-identification report for the whole session.
+    if not dry_run:
+        report_html = build_html_report(
+            report_headers, n_images,
+            session_id=data_row.id, use_case=use_case,
+        )
+        save_html_report(data_row, report_html)
+        _log_session(data_row, "debug-dump7", "De-identification report uploaded.")
     return None
 
 
@@ -220,12 +237,16 @@ def _get_dicom_files(data_row: DataRow) -> list:
     """
     def _get_dicom_in_session(session_key: str | None):
         try:
-            dicom_series = data_row.entry(session_key).item
+            entry = data_row.entry(session_key)
+            # Skip non-DICOM entries (e.g. an HTML report); they have no pixels.
+            if not issubclass(entry.datatype, DicomSeries):
+                return []
+            dicom_series = entry.item
             paths = dicom_series.contents
             pixel_arrays = [pydicom.dcmread(path).pixel_array for path in paths]
         except:
             print(f"Nothing found in data row {session_key}.")
-            return 0
+            return []
         return pixel_arrays
 
     resource_paths = list(data_row.entries_dict.keys())
@@ -264,7 +285,12 @@ def _count_dicom_files(data_row: DataRow, resource_path: str | None = None) -> i
             int: The number of DICOM files in the specified session.
         """
         try:
-            dicom_series = data_row.entry(session_key).item
+            entry = data_row.entry(session_key)
+            # Skip non-DICOM entries (e.g. an HTML report), whose contents
+            # cannot be enumerated as a DICOM series and are not scans to count.
+            if not issubclass(entry.datatype, DicomSeries):
+                return 0
+            dicom_series = entry.item
         except:
             print(f"Nothing found in data row {session_key}.")
             return 0
@@ -321,8 +347,8 @@ def build_html_report(flagged_headers: list[dict],
                       generated_at: datetime | None = None) -> str:
     """Builds a plain-language HTML de-identification report for one session.
 
-    The report lists only removed headers are listed; the
-    underlying PHI values are never included. 
+    The report lists only the headers that were removed; the underlying PHI
+    values are never included.
     Header names are de-duplicated across every image processed,
     so each type of information appears once regardless of how many slices or
     scans contained it.
@@ -454,3 +480,47 @@ def report_from_dicom_file(path: str | Path,
         use_case=use_case,
         generated_at=generated_at,
     )
+
+
+def save_html_report(data_row: DataRow,
+                     html_report: str,
+                     entry_name: str = "deidentification_report@deidentified") -> DataEntry:
+    """Uploads an HTML de-identification report to a data row as a new entry.
+
+    The report is a single HTML file, not a DICOM series, so the entry is
+    created with the generic ``fileformats.generic.File`` datatype rather than
+    ``DicomSeries``. An existing entry with the same name is re-used (its
+    contents overwritten) so re-running the pipeline does not create duplicate
+    reports.
+
+    Parameters
+    ----------
+    data_row : DataRow
+        The data row (session) to attach the report to.
+    html_report : str
+        The HTML document to upload, e.g. as produced by ``build_html_report``.
+    entry_name : str, optional
+        The resource path of the report entry within the row. Defaults to
+        ``'deidentification_report@deidentified'``.
+
+    Returns
+    -------
+    DataEntry
+        The created (or re-used) entry holding the uploaded report.
+    """
+    with tempfile.TemporaryDirectory(prefix="phi-finder-report-") as tmp_dir:
+        report_path = Path(tmp_dir) / "deidentification_report.html"
+        report_path.write_text(html_report, encoding="utf-8")
+
+        entries_names = [
+            k[0] if isinstance(k, tuple) else k
+            for k in data_row.entries_dict.keys()
+        ]
+        if entry_name in entries_names:
+            entry = data_row.entry(entry_name)
+        else:
+            entry = data_row.create_entry(entry_name, datatype=File)
+
+        # Assignment uploads the file while the temp dir is still alive.
+        entry.item = File(report_path)
+    return entry

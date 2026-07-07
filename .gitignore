@@ -5,3 +5,4 @@ dist/
 /phi_finder/_version.py
 extras*/
 *ipynb
+eval
