@@ -5,15 +5,15 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from frametree.core.row import DataRow
-from frametree.core.entry import DataEntry
-from fileformats.medimage.dicom import DicomSeries
+import pydicom
 from fileformats.generic import File
+from fileformats.medimage.dicom import DicomSeries
+from frametree.core.entry import DataEntry
+from frametree.core.row import DataRow
+from gliner.model import UniEncoderSpanGLiNER
+from presidio_analyzer import AnalyzerEngine
 from presidio_anonymizer import AnonymizerEngine
 from presidio_image_redactor import DicomImageRedactorEngine, ImageAnalyzerEngine, ContrastSegmentedImageEnhancer
-from gliner import GLiNER
-from gliner.model import UniEncoderSpanGLiNER
-import pydicom
 
 from phi_finder.dicom_tools import anonymise_dicom, ps3_15
 
@@ -45,13 +45,73 @@ def _log_session(data_row: DataRow, key: str, message: str) -> None:
     return None
 
 
+def _build_engines(use_case: str,
+                   score_threshold: float,
+                   spacy_model_name: str,
+                   destroy_pixels: bool,
+                   use_transformers: bool) -> tuple[AnalyzerEngine | None,
+                                                    AnonymizerEngine | None,
+                                                    DicomImageRedactorEngine | None,
+                                                    UniEncoderSpanGLiNER | None]:
+    """Builds the engines deidentify_dicom_files needs for a given use case.
+
+    In the PS3.15 use cases the standard headers are handled by the basic
+    profile. The NER engines (Presidio and GLiNER) are only needed when the 
+    full NER pipeline runs on the headers, or for the "..._scan_private" variants.
+    Presidio also redacts burned-in pixel PHI (if destroy_pixels=False).
+
+    Parameters
+    ----------
+    use_case : str
+        The de-identification use case (see deidentify_dicom_files).
+
+    score_threshold : float
+        The score threshold for entity recognition.
+
+    spacy_model_name : str
+        The name of the SpaCy model to use for NLP processing.
+
+    destroy_pixels : bool
+        If True, pixel data is destroyed, so no image redactor is needed.
+
+    use_transformers : bool
+        If True, GLiNER is used on top of Presidio wherever the NER pipeline
+        runs.
+
+    Returns
+    -------
+    tuple
+        (analyser, anonymizer, image_redactor, gliner_pii), each None when the
+        use case does not need it.
+    """
+    ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
+    ner_needed = not ps3_15_mode or ps3_15.scan_private_headers(use_case)
+    if ner_needed or destroy_pixels is False:
+        analyser = anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
+    else:
+        analyser = None
+    anonymizer = AnonymizerEngine() if ner_needed else None
+    if destroy_pixels is False:
+        image_redactor = (DicomImageRedactorEngine(
+                image_analyzer_engine=ImageAnalyzerEngine(analyzer_engine=analyser,
+                                                          image_preprocessor=ContrastSegmentedImageEnhancer()))
+        )
+    else:
+        image_redactor = None
+    if use_transformers and ner_needed:
+        gliner_pii = anonymise_dicom._build_transformer()
+    else:
+        gliner_pii = None
+    return analyser, anonymizer, image_redactor, gliner_pii
+
+
 def deidentify_dicom_files(data_row: DataRow,
                            score_threshold: float=0.5,
                            spacy_model_name: str="en_core_web_md",
                            destroy_pixels: bool=True,
                            use_transformers: bool=False,
                            dry_run: bool=False,
-                           use_case: str='Standard') -> None:
+                           use_case: str='dicom_retain_patient_scan_private') -> None:
     """Main function to deidentify dicom files in a data row.
         1. Download the files from the original scan entry fmap/DICOM
         2. Anonymise those files and store the anonymised files in a temp dir
@@ -82,19 +142,19 @@ def deidentify_dicom_files(data_row: DataRow,
         If True, the function will not perform any changes, only log the actions that would be taken.
         Note that original DICOM files will still be loaded.
 
-    use_case : str, optional (default 'Standard')
-        PS3.15 (alias 'dicom_default'): headers are de-identified with the
+    use_case : str, optional (default 'dicom_retain_patient_scan_private')
+        * PS3.15 (alias 'dicom_default'): headers are de-identified with the
         DICOM PS3.15 Annex E Basic Application Level Confidentiality Profile;
         Presidio and GLiNER are not used on the headers.
-        PS3.15_Rtn. Pat. (alias 'dicom_retain_patient'): as PS3.15, plus the
+        * PS3.15_Rtn. Pat. (alias 'dicom_retain_patient'): as PS3.15, plus the
         Retain Patient Characteristics Option, so patient characteristics
         (age, sex, weight, ...) are kept.
-        'dicom_default_scan_private' / 'dicom_retain_patient_scan_private': as
+        * 'dicom_default_scan_private' / 'dicom_retain_patient_scan_private': as
         the matching PS3.15 variant for the standard headers, but private
         attributes are kept and scanned with the Presidio/GLiNER pipeline
         instead of being removed.
-        Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
-        Presidio NER pipeline (plus GLiNER if use_transformers) and redacted.
+        * Any other (e.g. 'Standard', 'NER Only'): headers are dealt with the
+        Presidio NER pipeline (plus GLiNER if use_transformers).
 
     Returns
     -------
@@ -104,20 +164,10 @@ def deidentify_dicom_files(data_row: DataRow,
     """
     _log_session(data_row, "debug-dump0", "Pipeline started")
 
-    # In the 'PS3.15' use case the headers are handled by the PS3.15 basic
-    # profile, so the NER engines are only needed for image redaction (if any).
-    ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
-    analyser = (
-        anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
-        if not ps3_15_mode or destroy_pixels is False else None
+    analyser, anonymizer, image_redactor, gliner_pii = _build_engines(
+        use_case, score_threshold, spacy_model_name, destroy_pixels,
+        use_transformers,
     )
-    anonymizer = AnonymizerEngine() if not ps3_15_mode else None
-    image_redactor = (
-    DicomImageRedactorEngine(
-            image_analyzer_engine=ImageAnalyzerEngine(analyzer_engine=analyser, image_preprocessor=ContrastSegmentedImageEnhancer())
-        ) if destroy_pixels is False else None
-    )
-    gliner_pii = anonymise_dicom._build_transformer() if use_transformers and not ps3_15_mode else None
 
     # Accumulated across every scan/slice in the session to build one report.
     report_headers = []
@@ -449,11 +499,6 @@ def report_from_dicom_file(path: str | Path,
                            generated_at: datetime | None = None) -> str:
     """Builds a de-identification report for a single DICOM file on disk.
 
-    Convenience/sanity-check wrapper: reads the file, extracts the headers
-    phi-finder flagged in it, and renders the HTML report for that one image.
-    Useful for eyeballing the report of an already-anonymised file without
-    running the full XNAT pipeline.
-
     Parameters
     ----------
     path : str or pathlib.Path
@@ -487,11 +532,8 @@ def save_html_report(data_row: DataRow,
                      entry_name: str = "deidentification_report@deidentified") -> DataEntry:
     """Uploads an HTML de-identification report to a data row as a new entry.
 
-    The report is a single HTML file, not a DICOM series, so the entry is
-    created with the generic ``fileformats.generic.File`` datatype rather than
-    ``DicomSeries``. An existing entry with the same name is re-used (its
-    contents overwritten) so re-running the pipeline does not create duplicate
-    reports.
+    An existing entry with the same name is re-used (its contents overwritten) 
+    so re-running the pipeline does not create duplicate reports.
 
     Parameters
     ----------

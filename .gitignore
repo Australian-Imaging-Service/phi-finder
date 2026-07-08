@@ -6,3 +6,4 @@ dist/
 extras*/
 *ipynb
 eval
+*html
