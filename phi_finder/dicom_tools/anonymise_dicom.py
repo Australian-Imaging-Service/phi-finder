@@ -54,11 +54,11 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
         for keyword in ("NumberOfFrames", "PlanarConfiguration"):
             if keyword in ds:
                 del ds[keyword]
-        # The new PixelData is raw little-endian bytes, so the transfer syntax
-        # must be uncompressed regardless of how the source was encoded.
         if getattr(ds, "file_meta", None) is None:
             ds.file_meta = dicom.dataset.FileMetaDataset()
         ds.file_meta.TransferSyntaxUID = dicom.uid.ExplicitVRLittleEndian
+        ds.is_implicit_VR = False
+        ds.is_little_endian = True
     return ds
 
 

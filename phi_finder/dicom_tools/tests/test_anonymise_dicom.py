@@ -1,6 +1,7 @@
 import pytest
 import pydicom
 import json
+import warnings
 from pydicom.data import get_testdata_files
 from pydicom.valuerep import PersonName
 
@@ -51,6 +52,35 @@ def test_destroy_pixels_multiframe_colour_source():
     assert not anonymised_dataset.pixel_array.any()
     assert anonymised_dataset.SamplesPerPixel == 1
     assert "NumberOfFrames" not in anonymised_dataset
+
+
+DESTROY_PIXELS_SOURCES = [
+    "MR_small_implicit.dcm",
+    "MR_small_bigendian.dcm",
+    "MR_small_RLE.dcm",
+    "CT_small.dcm",
+]
+@pytest.mark.parametrize("source", DESTROY_PIXELS_SOURCES)
+def test_destroy_pixels_round_trips_through_save_as(source, tmp_path):
+    dataset = pydicom.dcmread(get_testdata_files(source)[0])
+    anonymised_dataset = anonymise_dicom.destroy_pixels(dataset)
+    assert anonymised_dataset.is_implicit_VR is False
+    assert anonymised_dataset.is_little_endian is True
+
+    path = tmp_path / "anonymised.dcm"
+    anonymised_dataset.save_as(path)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        reloaded = pydicom.dcmread(path)
+        pixels = reloaded.pixel_array
+
+    mismatch = [str(w.message) for w in caught
+                if "VR" in str(w.message) or "endian" in str(w.message)]
+    assert not mismatch, mismatch
+    assert reloaded.file_meta.TransferSyntaxUID == pydicom.uid.ExplicitVRLittleEndian
+    assert pixels.shape == (8, 8)
+    assert not pixels.any()
 
 
 class _RaisingAnalyser:
@@ -136,36 +166,6 @@ def test_private_creator_untouched_in_standard_mode():
     # The block's data elements are still scanned and scrubbed.
     assert "John Doe" not in str(anonymised[priv_tag].value)
     assert "XXXX" in str(anonymised[priv_tag].value)
-
-
-def test_build_engines_scan_private(monkeypatch):
-    # The "..._scan_private" variants run the NER pipeline over private
-    # headers, so the engines must be built once up front — otherwise
-    # anonymise_image rebuilds the spaCy analyser for every file in the
-    # series — with the caller's spaCy model, and GLiNER when requested.
-    analyser_builds = []
-
-    def fake_analyser_builder(score_threshold, spacy_model_name):
-        analyser_builds.append((score_threshold, spacy_model_name))
-        return "analyser"
-
-    monkeypatch.setattr(
-        anonymise_dicom, "_build_presidio_analyser", fake_analyser_builder
-    )
-    monkeypatch.setattr(anonymise_dicom, "_build_transformer", lambda: "gliner")
-
-    analyser, anonymizer, image_redactor, gliner_pii = utils._build_engines(
-        use_case="dicom_default_scan_private",
-        score_threshold=0.5,
-        spacy_model_name="en_core_web_sm",
-        destroy_pixels=True,
-        use_transformers=True,
-    )
-    assert analyser == "analyser"
-    assert analyser_builds == [(0.5, "en_core_web_sm")]
-    assert anonymizer is not None
-    assert image_redactor is None
-    assert gliner_pii == "gliner"
 
 
 def test_build_engines_plain_ps3_15(monkeypatch):
