@@ -1,11 +1,15 @@
 import pytest
 import pydicom
 import json
+import warnings
 from pydicom.data import get_testdata_files
 from pydicom.valuerep import PersonName
 
 
-from phi_finder.dicom_tools import anonymise_dicom
+from presidio_anonymizer import AnonymizerEngine
+from presidio_anonymizer.entities import OperatorConfig
+
+from phi_finder.dicom_tools import anonymise_dicom, utils
 
 
 def test_anonymise_with_transformer():
@@ -50,6 +54,35 @@ def test_destroy_pixels_multiframe_colour_source():
     assert "NumberOfFrames" not in anonymised_dataset
 
 
+DESTROY_PIXELS_SOURCES = [
+    "MR_small_implicit.dcm",
+    "MR_small_bigendian.dcm",
+    "MR_small_RLE.dcm",
+    "CT_small.dcm",
+]
+@pytest.mark.parametrize("source", DESTROY_PIXELS_SOURCES)
+def test_destroy_pixels_round_trips_through_save_as(source, tmp_path):
+    dataset = pydicom.dcmread(get_testdata_files(source)[0])
+    anonymised_dataset = anonymise_dicom.destroy_pixels(dataset)
+    assert anonymised_dataset.is_implicit_VR is False
+    assert anonymised_dataset.is_little_endian is True
+
+    path = tmp_path / "anonymised.dcm"
+    anonymised_dataset.save_as(path)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        reloaded = pydicom.dcmread(path)
+        pixels = reloaded.pixel_array
+
+    mismatch = [str(w.message) for w in caught
+                if "VR" in str(w.message) or "endian" in str(w.message)]
+    assert not mismatch, mismatch
+    assert reloaded.file_meta.TransferSyntaxUID == pydicom.uid.ExplicitVRLittleEndian
+    assert pixels.shape == (8, 8)
+    assert not pixels.any()
+
+
 class _RaisingAnalyser:
     def analyze(self, *args, **kwargs):
         raise RuntimeError("boom")
@@ -64,7 +97,7 @@ def test_anonymise_ds_fails_closed():
     anonymise_dicom._anonymise_ds(
         dataset,
         analyser=_RaisingAnalyser(),
-        anonymizer=anonymise_dicom.AnonymizerEngine(),
+        anonymizer=AnonymizerEngine(),
         score_threshold=0.5,
         anonymised_headers=anonymised_headers,
     )
@@ -104,6 +137,56 @@ def test_age_string_replaced_with_valid_sentinel():
     assert any(e["tag"] == age_tag_str for e in flagged)
 
 
+def test_specific_character_set_untouched():
+    # The charset declaration (0008,0005) is a CS value the postcode/ORG
+    # recognisers match ("ISO 2022 IR 100" contains "2022"); redacting it
+    # breaks text decoding for every non-Latin dataset.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    dataset.SpecificCharacterSet = "ISO 2022 IR 100"
+    anonymised_dataset = anonymise_dicom.anonymise_image(
+        dataset,
+        use_case="Standard",
+    )
+    assert anonymised_dataset.SpecificCharacterSet == "ISO 2022 IR 100"
+
+
+def test_private_creator_untouched_in_standard_mode():
+    # Private creators are block bookkeeping, not PHI, and spaCy flags
+    # "SIEMENS" as an organisation: redacting the creator would corrupt the
+    # creator-to-data mapping of the whole block (e.g. Siemens CSA headers).
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    block = dataset.private_block(0x0011, "SIEMENS CSA HEADER", create=True)
+    block.add_new(0x01, "LO", "John Doe")
+    priv_tag = block.get_tag(0x01)
+    creator_tag = pydicom.tag.Tag(priv_tag.group, priv_tag.element >> 8)
+
+    anonymised = anonymise_dicom.anonymise_image(dataset, use_case="Standard")
+
+    assert str(anonymised[creator_tag].value) == "SIEMENS CSA HEADER"
+    # The block's data elements are still scanned and scrubbed.
+    assert "John Doe" not in str(anonymised[priv_tag].value)
+    assert "XXXX" in str(anonymised[priv_tag].value)
+
+
+def test_build_engines_plain_ps3_15(monkeypatch):
+    # The plain PS3.15 profile never runs the NER pipeline on headers, so with
+    # destroyed pixels none of the (expensive) engines may be built.
+    def _fail(*args, **kwargs):
+        raise AssertionError("engine builder should not be called")
+
+    monkeypatch.setattr(anonymise_dicom, "_build_presidio_analyser", _fail)
+    monkeypatch.setattr(anonymise_dicom, "_build_transformer", _fail)
+
+    engines = utils._build_engines(
+        use_case="PS3.15",
+        score_threshold=0.5,
+        spacy_model_name="en_core_web_md",
+        destroy_pixels=True,
+        use_transformers=True,
+    )
+    assert engines == (None, None, None, None)
+
+
 def test_structural_cs_values_untouched():
     # ImageType's magnitude component 'M' must survive the gender recognizer.
     dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
@@ -130,7 +213,7 @@ TEST_STRINGS_PII = ["John Doe",
 @pytest.mark.parametrize("test_string", TEST_STRINGS_PII)
 def test_presidio_regex_sensitive(test_string: str):
     analyser = anonymise_dicom._build_presidio_analyser(0.5)
-    anonymizer = anonymise_dicom.AnonymizerEngine()
+    anonymizer = AnonymizerEngine()
     analyzer_results = analyser.analyze(
                     text=test_string, language="en", score_threshold=0.5
                 )
@@ -138,7 +221,7 @@ def test_presidio_regex_sensitive(test_string: str):
         text=test_string,
         analyzer_results=analyzer_results,
         operators={
-            "DEFAULT": anonymise_dicom.OperatorConfig("replace", {"new_value": "[XXXX]"})
+            "DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})
         },
     ).text
     assert "[XXXX]" in anonymized_text
@@ -148,7 +231,7 @@ TEST_STRINGS_CLEAN = ["Not sensitive", "Flat tire", "Most common"]
 @pytest.mark.parametrize("test_string", TEST_STRINGS_CLEAN)
 def test_presidio_regex_clean(test_string: str):
     analyser = anonymise_dicom._build_presidio_analyser(0.5)
-    anonymizer = anonymise_dicom.AnonymizerEngine()
+    anonymizer = AnonymizerEngine()
     analyzer_results = analyser.analyze(
                     text=test_string, language="en", score_threshold=0.5
                 )
@@ -156,7 +239,7 @@ def test_presidio_regex_clean(test_string: str):
         text=test_string,
         analyzer_results=analyzer_results,
         operators={
-            "DEFAULT": anonymise_dicom.OperatorConfig("replace", {"new_value": "[XXXX]"})
+            "DEFAULT": OperatorConfig("replace", {"new_value": "[XXXX]"})
         },
     ).text
     assert test_string == anonymized_text
@@ -238,6 +321,7 @@ def test_anonymise_image_ps3_15_use_case():
     assert anonymised_dataset.StudyInstanceUID != original_study_uid  # U
     assert anonymised_dataset.file_meta.MediaStorageSOPInstanceUID == anonymised_dataset.SOPInstanceUID
     assert anonymised_dataset.PatientIdentityRemoved == "YES"
+    assert anonymised_dataset.LongitudinalTemporalInformationModified == "REMOVED"
     assert "PS3.15" in anonymised_dataset.DeidentificationMethod
     # The flagged-headers private block is still written.
     flagged = json.loads(anonymised_dataset[0x0209, 0x1000].value)
@@ -271,8 +355,10 @@ def test_anonymise_image_ps3_15_retain_patient_characteristics():
     # Direct identifiers still removed/emptied.
     assert str(anonymised_dataset.PatientName) == ""  # Z
     assert anonymised_dataset.PatientBirthDate == ""  # Z
-    # The retain option is recorded in the method code sequence.
+    # The retain option is recorded in the method code sequence; dates are
+    # still removed, so (0028,0303) is REMOVED in this variant too.
     assert anonymised_dataset.PatientIdentityRemoved == "YES"
+    assert anonymised_dataset.LongitudinalTemporalInformationModified == "REMOVED"
     codes = [item.CodeValue for item in anonymised_dataset.DeidentificationMethodCodeSequence]
     assert "113100" in codes  # Basic Application Confidentiality Profile
     assert "113108" in codes  # Retain Patient Characteristics Option

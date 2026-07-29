@@ -1,8 +1,9 @@
 import numpy as np
 from pathlib import Path
+from fileformats.generic import File
 from frametree.core.row import DataRow
 
-from phi_finder.dicom_tools import utils
+from phi_finder.dicom_tools import html_report, utils
 
 
 def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
@@ -103,6 +104,104 @@ def test_create_empty_entry(data_row: DataRow):
     anonymised_key = key.replace("/DICOM", "@deidentified_empty")
     data_row.create_entry(anonymised_key, datatype=utils.DicomSeries)
     assert 0 == utils._count_dicom_files(data_row, resource_path=anonymised_key)
+
+
+def _report_keys(data_row: DataRow) -> list:
+    return [
+        k[0] if isinstance(k, tuple) else k
+        for k in data_row.entries_dict.keys()
+        if (k[0] if isinstance(k, tuple) else k) == "deidentification_report@deidentified"
+    ]
+
+
+def test_pipeline_generates_report(data_row: DataRow):
+    """deidentify_dicom_files uploads one session report, and re-runs re-use it."""
+    utils.deidentify_dicom_files(data_row,
+                                 score_threshold=0.5,
+                                 spacy_model_name="en_core_web_md",
+                                 destroy_pixels=True,
+                                 use_transformers=False,
+                                 dry_run=False)
+
+    assert _report_keys(data_row) == ["deidentification_report@deidentified"]
+
+    entry = data_row.entry("deidentification_report@deidentified")
+    assert issubclass(entry.datatype, File)
+    # The report does not count as a DICOM scan.
+    assert utils._count_dicom_files(
+        data_row, resource_path="deidentification_report@deidentified"
+    ) == 0
+
+    contents = entry.item.read_contents()
+    if isinstance(contents, bytes):
+        contents = contents.decode("utf-8")
+    assert "De-identification report" in contents
+    assert "image(s) processed" in contents
+
+    # Re-running the pipeline re-uses the report entry rather than duplicating it.
+    utils.deidentify_dicom_files(data_row,
+                                 score_threshold=0.5,
+                                 spacy_model_name="en_core_web_md",
+                                 destroy_pixels=True,
+                                 use_transformers=False,
+                                 dry_run=False)
+    assert _report_keys(data_row) == ["deidentification_report@deidentified"]
+
+
+def test_dry_run_generates_no_report(data_row: DataRow):
+    """A dry-run anonymises nothing, so no report entry is created."""
+    utils.deidentify_dicom_files(data_row,
+                                 score_threshold=0.5,
+                                 spacy_model_name="en_core_web_md",
+                                 destroy_pixels=True,
+                                 use_transformers=False,
+                                 dry_run=True)
+    assert _report_keys(data_row) == []
+
+
+def test_save_html_report(data_row: DataRow):
+    """An HTML report can be uploaded as its own (non-DICOM) entry and read back."""
+    entry_name = "deidentification_report@deidentified"
+    report_html = html_report.build_html_report(
+        [{"tag": "(0010, 0010)", "name": "Patient's Name"}],
+        n_images=3,
+        session_id=data_row.id,
+        use_case="Standard",
+    )
+
+    n_dicom_before = utils._count_dicom_files(data_row, resource_path=None)
+
+    entry = html_report.save_html_report(data_row, report_html, entry_name=entry_name)
+
+    # The entry exists on the row under the given name...
+    keys = [
+        k[0] if isinstance(k, tuple) else k
+        for k in data_row.entries_dict.keys()
+    ]
+    assert entry_name in keys
+
+    # It is a plain file, not a DICOM series.
+    assert issubclass(entry.datatype, File)
+    assert not issubclass(entry.datatype, utils.DicomSeries)
+
+    # It is not counted as a scan, and does not break counting the row.
+    assert utils._count_dicom_files(data_row, resource_path=entry_name) == 0
+    assert utils._count_dicom_files(data_row, resource_path=None) == n_dicom_before
+
+    # Its contents round-trip back exactly.
+    contents = entry.item.read_contents()
+    if isinstance(contents, bytes):
+        contents = contents.decode("utf-8")
+    assert contents == report_html
+    assert "Patient&#x27;s Name" in contents
+
+    # Re-uploading re-uses the entry rather than duplicating it.
+    html_report.save_html_report(data_row, report_html, entry_name=entry_name)
+    keys_after = [
+        k[0] if isinstance(k, tuple) else k
+        for k in data_row.entries_dict.keys()
+    ]
+    assert keys_after.count(entry_name) == 1
 
 
 def test_debug_field_dump(data_row: DataRow) -> None:

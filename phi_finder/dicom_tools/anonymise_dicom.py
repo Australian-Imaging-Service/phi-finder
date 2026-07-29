@@ -1,27 +1,26 @@
-import os
 import json
 import logging
+import os
 from datetime import datetime
-logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
-logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
 import pydicom as dicom
 from pydicom.datadict import add_private_dict_entries
 from pydicom.tag import Tag
+from pydicom.valuerep import PersonName
 from gliner import GLiNER
 from gliner.model import UniEncoderSpanGLiNER
-
-from presidio_image_redactor import DicomImageRedactorEngine
-from presidio_anonymizer import AnonymizerEngine
-from pydicom.pixel_data_handlers.util import apply_voi_lut
-from pydicom.valuerep import PersonName
-from presidio_anonymizer.entities import OperatorConfig
-from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
 from presidio_analyzer.nlp_engine import NlpEngineProvider
+from presidio_anonymizer import AnonymizerEngine
+from presidio_anonymizer.entities import OperatorConfig
+from presidio_image_redactor import DicomImageRedactorEngine
 
 from phi_finder.dicom_tools import ps3_15
+
+logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
+logger = logging.getLogger(__name__)
 
 
 def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
@@ -55,23 +54,17 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
         for keyword in ("NumberOfFrames", "PlanarConfiguration"):
             if keyword in ds:
                 del ds[keyword]
-        # The new PixelData is raw little-endian bytes, so the transfer syntax
-        # must be uncompressed regardless of how the source was encoded.
         if getattr(ds, "file_meta", None) is None:
             ds.file_meta = dicom.dataset.FileMetaDataset()
         ds.file_meta.TransferSyntaxUID = dicom.uid.ExplicitVRLittleEndian
+        ds.is_implicit_VR = False
+        ds.is_little_endian = True
     return ds
 
 
 def _build_presidio_analyser(score_threshold: float=0.5,
                              spacy_model_name: str="en_core_web_md") -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
-
-    This function initialises an NLP engine using the SpaCy library and sets up
-    various pattern recognisers for different types of entities, including titles,
-    correspondence, phone numbers, medical record numbers (MRN), provider numbers,
-    dates, street addresses, postcodes, suburbs, states, and institutes. The
-    recognisers are configured with specific patterns and deny lists.
 
     Parameters
     ----------
@@ -403,8 +396,11 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
 
 # Structural elements whose values are DICOM defined terms, not free text.
 # They must never be redacted: e.g. ImageType's magnitude component 'M' would
-# otherwise match the standalone-M/F gender pattern, corrupting the image.
+# otherwise match the standalone-M/F gender pattern, corrupting the image, and
+# the postcode pattern would hit the "2022" in charset "ISO 2022 IR 100",
+# breaking text decoding of the whole file.
 _STRUCTURAL_TAGS = frozenset({
+    Tag(0x0008, 0x0005),  # Specific Character Set
     Tag(0x0008, 0x0008),  # Image Type
     Tag(0x0008, 0x0060),  # Modality
     Tag(0x0018, 0x5100),  # Patient Position (e.g. HFS)
@@ -427,6 +423,9 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
     scanned/redacted; standard attributes are left untouched (the caller has
     already de-identified them, e.g. via the PS3.15 Basic Profile). Sequences
     are still recursed into so private attributes nested inside them are reached.
+
+    Private creator elements are never scrubbed: 
+    the creator string identifies the block's owner; redacting it'd corrupt the creator-to-data mapping of every element in the block.
     """
     if anonymised_headers is None:
         anonymised_headers = []
@@ -443,10 +442,11 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     anonymised_headers, private_only
                 )
             continue
-        if private_only and (not elem.tag.is_private or elem.tag.is_private_creator):
-            # Only scrub private data elements; leave standard attributes (the
-            # caller already handled them) and private creators (scrubbing them
-            # would corrupt the block's creator-to-data mapping) untouched.
+        if elem.tag.is_private_creator:
+            continue  # Private creators ("SIEMENS CSA HEADER") never touched.
+        if private_only and not elem.tag.is_private:
+            # Only scrub private data elements; leave standard attributes
+            # untouched (the caller already handled them).
             continue
         if elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
@@ -534,10 +534,6 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     use_case: str='Standard') -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
 
-    This function processes the DICOM dataset, redacting personal names and other
-    identifiable information based on the specified score threshold. It utilises
-    named entity recognition pipelines to identify and replace sensitive information.
-
     Parameters
     ----------
     ds : pydicom.dataset.FileDataset
@@ -560,17 +556,17 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         If set, the model will be used for anonymisation on top of Presidio's output.
 
     use_case : str, optional (default 'Standard')
-        PS3.15 (alias 'dicom_default'): headers are de-identified with the
+        * PS3.15 (alias 'dicom_default'): headers are de-identified with the
         DICOM PS3.15 Annex E Basic Application Level Confidentiality Profile;
         Presidio and GLiNER are not used on the headers.
         PS3.15_Rtn. Pat. (alias 'dicom_retain_patient'): as PS3.15, plus the
-        Retain Patient Characteristics Option, so patient characteristics
+        * Retain Patient Characteristics Option, so patient characteristics
         (age, sex, weight, ...) are kept.
-        'dicom_default_scan_private' / 'dicom_retain_patient_scan_private': as
+        * 'dicom_default_scan_private' / 'dicom_retain_patient_scan_private': as
         the matching PS3.15 variant for the standard headers, but private
         attributes are kept and scanned with the Presidio/GLiNER pipeline
         instead of being removed.
-        Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
+        * Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
         Presidio NER pipeline (plus GLiNER when gliner_pii is given) and
         redacted.
 

@@ -957,8 +957,9 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
     Table E.1-1 to every element (recursing into sequences), removes private
     attributes, curve and overlay data, and marks the dataset as
     de-identified via Patient Identity Removed (0012,0062),
-    De-identification Method (0012,0063) and De-identification Method Code
-    Sequence (0012,0064).
+    De-identification Method (0012,0063), De-identification Method Code
+    Sequence (0012,0064) and Longitudinal Temporal Information Modified
+    (0028,0303) = "REMOVED" (dates/times are not retained or shifted).
 
     Pixel data is not touched; burned-in PHI must be handled separately
     (e.g. with destroy_pixels or an image redactor).
@@ -992,6 +993,10 @@ def apply_basic_profile(ds: dicom.dataset.Dataset,
         anonymised_headers = []
     _apply(ds, anonymised_headers, retain_patient_characteristics, scan_private)
     ds.PatientIdentityRemoved = "YES"
+    # Dates and times are zeroed, dummied or removed by the profile (no
+    # Retain Longitudinal Temporal Information option is supported), which
+    # PS3.15 E.1.1 requires recording as (0028,0303) = "REMOVED".
+    ds.LongitudinalTemporalInformationModified = "REMOVED"
     method_codes = [_code_item("113100", "Basic Application Confidentiality Profile")]
     # Deidentification Method (0012,0063) is VR LO (max 64 chars), so keep the
     # text short; the full detail lives in the code sequence below.

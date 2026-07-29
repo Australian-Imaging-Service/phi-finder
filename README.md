@@ -20,7 +20,7 @@ python -m pip install --upgrade build
 
 python -m build
 
-pip install dist/phi_finder-0.1.14-py3-none-any.whl
+pip install dist/phi_finder-0.1.16-py3-none-any.whl
 ```
 
 ## Basic usage (headers only)
@@ -134,8 +134,8 @@ The `use_case` match is case-insensitive and tolerant of separator spelling, so
 all select the plain profile, and `"PS3.15_Rtn. Pat."`,
 `"PS3.15 Retain Patient Characteristics"` or the alias `"dicom_retain_patient"`
 select the retain variant. Appending `_scan_private` to either alias selects the
-private-header-scanning variant. Any other value (e.g. `"Standard"`, the default,
-or `"Aggressive"`) falls back to the Presidio/GLiNER pipeline described above.
+private-header-scanning variant. Any other value (e.g. `"Standard"`,
+or `"NER Only"`) falls back to the Presidio/GLiNER pipeline.
 
 > **Note:** `use_case` only controls how the **headers** are handled. Burned-in
 > pixel PHI is still redacted only when an `image_redactor` is passed, exactly
