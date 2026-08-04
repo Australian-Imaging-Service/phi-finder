@@ -70,8 +70,7 @@ def _build_engines(use_case: str,
         If True, pixel data is destroyed, so no image redactor is needed.
 
     use_transformers : bool
-        If True, GLiNER is used on top of Presidio wherever the NER pipeline
-        runs.
+        If True, GLiNER is used on top of Presidio wherever the NER pipeline runs.
 
     Returns
     -------
@@ -93,10 +92,11 @@ def _build_engines(use_case: str,
         )
     else:
         image_redactor = None
-    if use_transformers and ner_needed:
-        gliner_pii = anonymise_dicom._build_transformer()
-    else:
-        gliner_pii = None
+    # GLiNER is built whenever the caller asked for it: even a PS3.15 use case
+    # that leaves the standard headers to the profile runs the NER pipeline over
+    # the free-text attributes the profile has no action for (e.g. SR Text
+    # Value), and those are exactly the long values GLiNER is there to catch.
+    gliner_pii = anonymise_dicom._build_transformer() if use_transformers else None
     return analyser, anonymizer, image_redactor, gliner_pii
 
 

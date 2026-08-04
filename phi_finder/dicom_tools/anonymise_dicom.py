@@ -408,6 +408,63 @@ _STRUCTURAL_TAGS = frozenset({
     Tag(0x0028, 0x0004),  # Photometric Interpretation
 })
 
+# Standard headers that PS3.15 Table E.1-1 gives no action to, 
+# but they can hold long texts, so the NER models scan them.
+_NER_SCANNED_TAGS = frozenset({
+    Tag(0x0040, 0xA160),  # Text Value (SR Document Content)
+})
+
+
+# Analysers that anonymise_image builds for itself (i.e. the caller passed
+# none) are cached. A PS3.15 run only needs one when it meets a file carrying a
+# free-text attribute, and rebuilding the spaCy pipeline for every such file
+# would dominate the runtime of a report-heavy session.
+_ANALYSER_CACHE: dict[float, AnalyzerEngine] = {}
+
+
+def _lazy_presidio_analyser(score_threshold: float) -> AnalyzerEngine:
+    """Returns a shared Presidio analyser, building it on first use.
+
+    Parameters
+    ----------
+    score_threshold : float
+        The score threshold the analyser's custom recognisers are built with.
+
+    Returns
+    -------
+    AnalyzerEngine
+        The cached analyser for this threshold.
+    """
+    if score_threshold not in _ANALYSER_CACHE:
+        _ANALYSER_CACHE[score_threshold] = _build_presidio_analyser(score_threshold)
+    return _ANALYSER_CACHE[score_threshold]
+
+
+def _contains_ner_scanned_tag(ds: dicom.dataset.Dataset) -> bool:
+    """Reports whether a dataset holds any of the tags in ``_NER_SCANNED_TAGS``.
+
+    Sequences are searched too, so a Text Value nested in a content item counts.
+    Used to decide whether a PS3.15 run needs the NER engines at all.
+
+    Parameters
+    ----------
+    ds : pydicom.dataset.Dataset
+        The dataset to search.
+
+    Returns
+    -------
+    bool
+        True if at least one NER-scanned attribute is present.
+    """
+    for elem in ds:
+        if elem.tag in _NER_SCANNED_TAGS:
+            return True
+        if elem.VR == "SQ":
+            for sub_ds in elem.value:
+                if isinstance(sub_ds, dicom.dataset.Dataset) and _contains_ner_scanned_tag(sub_ds):
+                    return True
+    return False
+
 
 def _anonymise_ds(ds: dicom.dataset.Dataset,
                   analyser: AnalyzerEngine,
@@ -419,10 +476,11 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   private_only: bool = False) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place.
 
-    When ``private_only`` is True, only private attributes have their values
-    scanned/redacted; standard attributes are left untouched (the caller has
-    already de-identified them, e.g. via the PS3.15 Basic Profile). Sequences
-    are still recursed into so private attributes nested inside them are reached.
+    When ``private_only`` is True, only private attributes and the free-text
+    attributes in ``_NER_SCANNED_TAGS`` have their values scanned/redacted; the
+    remaining standard attributes are left untouched (the caller has already
+    de-identified them, e.g. via the PS3.15 Basic Profile). Sequences are still
+    recursed into so attributes nested inside them are reached.
 
     Private creator elements are never scrubbed: 
     the creator string identifies the block's owner; redacting it'd corrupt the creator-to-data mapping of every element in the block.
@@ -444,9 +502,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             continue
         if elem.tag.is_private_creator:
             continue  # Private creators ("SIEMENS CSA HEADER") never touched.
-        if private_only and not elem.tag.is_private:
-            # Only scrub private data elements; leave standard attributes
-            # untouched (the caller already handled them).
+        if private_only and not elem.tag.is_private and elem.tag not in _NER_SCANNED_TAGS:
             continue
         if elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
@@ -584,11 +640,14 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
 
     ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
     scan_private = ps3_15.scan_private_headers(use_case)
-    # The NER engines are needed for the full pipeline and for the private-header
-    # scan that the "..._scan_private" PS3.15 variants run on top of the profile.
-    if not ps3_15_mode or scan_private:
+    # The NER engines are needed for the full pipeline, for the private-header
+    # scan that the "..._scan_private" PS3.15 variants run on top of the profile,
+    # and for the free-text attributes the profile has no action for (only built
+    # when the dataset actually carries one, so plain PS3.15 stays cheap).
+    ner_scanned_tags_present = ps3_15_mode and _contains_ner_scanned_tag(ds)
+    if not ps3_15_mode or scan_private or ner_scanned_tags_present:
         if analyser is None:
-            analyser = _build_presidio_analyser(score_threshold)
+            analyser = _lazy_presidio_analyser(score_threshold)
         if anonymizer is None:
             anonymizer = AnonymizerEngine()
     if image_redactor is not None:
@@ -602,9 +661,11 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
             retain_patient_characteristics=ps3_15.retain_patient_characteristics(use_case),
             scan_private=scan_private,
         )
-        if scan_private:
-            # Private attributes were kept by the profile; scrub PHI from their
-            # values with the NER pipeline instead of removing them outright.
+        if scan_private or ner_scanned_tags_present:
+            # Attributes the profile kept — private ones in the "..._scan_private"
+            # variants, plus the free-text ones Table E.1-1 has no action for —
+            # have their PHI scrubbed by the NER pipeline instead of being
+            # removed outright.
             _anonymise_ds(ds, analyser, anonymizer, score_threshold,
                           gliner_pii, use_case, anonymised_headers,
                           private_only=True)

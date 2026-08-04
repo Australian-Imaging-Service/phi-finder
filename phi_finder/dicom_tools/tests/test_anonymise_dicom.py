@@ -169,22 +169,32 @@ def test_private_creator_untouched_in_standard_mode():
 
 
 def test_build_engines_plain_ps3_15(monkeypatch):
-    # The plain PS3.15 profile never runs the NER pipeline on headers, so with
-    # destroyed pixels none of the (expensive) engines may be built.
     def _fail(*args, **kwargs):
         raise AssertionError("engine builder should not be called")
 
+    sentinel = object()
     monkeypatch.setattr(anonymise_dicom, "_build_presidio_analyser", _fail)
-    monkeypatch.setattr(anonymise_dicom, "_build_transformer", _fail)
+    monkeypatch.setattr(anonymise_dicom, "_build_transformer", lambda: sentinel)
 
     engines = utils._build_engines(
         use_case="PS3.15",
         score_threshold=0.5,
         spacy_model_name="en_core_web_md",
         destroy_pixels=True,
-        use_transformers=True,
+        use_transformers=False,
     )
     assert engines == (None, None, None, None)
+
+    # GLiNER is built whenever it was asked for, so the free-text scan gets it.
+    analyser, anonymizer, image_redactor, gliner_pii = utils._build_engines(
+        use_case="PS3.15",
+        score_threshold=0.5,
+        spacy_model_name="en_core_web_md",
+        destroy_pixels=True,
+        use_transformers=True,
+    )
+    assert (analyser, anonymizer, image_redactor) == (None, None, None)
+    assert gliner_pii is sentinel
 
 
 def test_structural_cs_values_untouched():
@@ -395,3 +405,58 @@ def test_anonymise_image_scan_private_keeps_and_scrubs_private():
     pblock.add_new(0x01, "LO", "Jane Smith")
     plain_anon = anonymise_dicom.anonymise_image(plain, use_case="dicom_default")
     assert pblock.get_tag(0x01) not in plain_anon
+
+
+SR_REPORT_TEXT = (
+    " CT BRAIN - CLINICAL DATA Right facial droop, reported by Dr Emily Watson "
+    "of Royal Melbourne Hospital on 04/03/2019. Patient John Smith, phone "
+    "0412 345 678. TECHNIQUE Non-contrast axial images were acquired."
+)
+
+
+def _sr_dataset(text: str = SR_REPORT_TEXT) -> pydicom.dataset.Dataset:
+    """Builds a minimal SR that carries its report in Text Value (0040,A160)."""
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    dataset.Modality = "SR"
+    dataset.ValueType = "CONTAINER"
+    dataset.TextValue = text
+    return dataset
+
+
+@pytest.mark.parametrize(
+    "use_case", ["dicom_default", "dicom_retain_patient", "dicom_retain_patient_scan_private"]
+)
+def test_ps3_15_scans_sr_text_value(use_case):
+    # Text Value (0040,A160) has no PS3.15 Table E.1-1 action, so the Basic
+    # Profile leaves it alone. It holds the whole narrative report of an SR, so
+    # every PS3.15 variant must run the NER pipeline over it rather than let it
+    # through untouched.
+    anonymised = anonymise_dicom.anonymise_image(_sr_dataset(), use_case=use_case)
+
+    text_value = str(anonymised[0x0040, 0xA160].value)
+    # The report itself is kept -- it is scrubbed, not removed.
+    assert 0x0040A160 in anonymised
+    assert "Non-contrast axial images were acquired." in text_value
+    # ...but its PHI is gone.
+    assert "John Smith" not in text_value
+    assert "Emily Watson" not in text_value
+    assert "Royal Melbourne Hospital" not in text_value
+    assert "0412 345 678" not in text_value
+    assert "04/03/2019" not in text_value
+    assert "XXXX" in text_value
+    # The change is recorded in the audit block like any other redacted header.
+    flagged = json.loads(anonymised[0x0209, 0x1000].value)
+    assert any(header["tag"] == "(0040, a160)" for header in flagged)
+
+
+def test_ps3_15_without_free_text_builds_no_analyser(monkeypatch):
+    def _fail(*args, **kwargs):
+        raise AssertionError("analyser should not be built")
+
+    monkeypatch.setattr(anonymise_dicom, "_build_presidio_analyser", _fail)
+    monkeypatch.setattr(anonymise_dicom, "_ANALYSER_CACHE", {})
+
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    assert "TextValue" not in dataset
+    anonymised = anonymise_dicom.anonymise_image(dataset, use_case="dicom_default")
+    assert anonymised.PatientIdentityRemoved == "YES"
