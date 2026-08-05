@@ -334,9 +334,6 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
                                 return_entities: bool=False) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
 
-    This function processes the input text through the provided NER pipeline,
-    replacing recognised entities of type "PER", "LOC", and "ORG" with the placeholder "[XXXX]".
-
     Parameters
     ----------
     model : Gliner's UniEncoderSpanGLiNER
@@ -415,46 +412,8 @@ _NER_SCANNED_TAGS = frozenset({
 })
 
 
-# Analysers that anonymise_image builds for itself (i.e. the caller passed
-# none) are cached. A PS3.15 run only needs one when it meets a file carrying a
-# free-text attribute, and rebuilding the spaCy pipeline for every such file
-# would dominate the runtime of a report-heavy session.
-_ANALYSER_CACHE: dict[float, AnalyzerEngine] = {}
-
-
-def _lazy_presidio_analyser(score_threshold: float) -> AnalyzerEngine:
-    """Returns a shared Presidio analyser, building it on first use.
-
-    Parameters
-    ----------
-    score_threshold : float
-        The score threshold the analyser's custom recognisers are built with.
-
-    Returns
-    -------
-    AnalyzerEngine
-        The cached analyser for this threshold.
-    """
-    if score_threshold not in _ANALYSER_CACHE:
-        _ANALYSER_CACHE[score_threshold] = _build_presidio_analyser(score_threshold)
-    return _ANALYSER_CACHE[score_threshold]
-
-
 def _contains_ner_scanned_tag(ds: dicom.dataset.Dataset) -> bool:
-    """Reports whether a dataset holds any of the tags in ``_NER_SCANNED_TAGS``.
-
-    Sequences are searched too, so a Text Value nested in a content item counts.
-    Used to decide whether a PS3.15 run needs the NER engines at all.
-
-    Parameters
-    ----------
-    ds : pydicom.dataset.Dataset
-        The dataset to search.
-
-    Returns
-    -------
-    bool
-        True if at least one NER-scanned attribute is present.
+    """Checks if the dicom has any of the tags in ``_NER_SCANNED_TAGS``.
     """
     for elem in ds:
         if elem.tag in _NER_SCANNED_TAGS:
@@ -479,8 +438,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
     When ``private_only`` is True, only private attributes and the free-text
     attributes in ``_NER_SCANNED_TAGS`` have their values scanned/redacted; the
     remaining standard attributes are left untouched (the caller has already
-    de-identified them, e.g. via the PS3.15 Basic Profile). Sequences are still
-    recursed into so attributes nested inside them are reached.
+    de-identified them, e.g. via the PS3.15 Basic Profile).
 
     Private creator elements are never scrubbed: 
     the creator string identifies the block's owner; redacting it'd corrupt the creator-to-data mapping of every element in the block.
@@ -568,8 +526,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 else:
                     ds[elem.tag].value = new_values[0]
             except Exception as e:
-                # Fail closed: a value that could not be analysed may still
-                # contain PHI, so blank it rather than leave the original.
+                # A value that couldn't be analysed may contain PHI, so blank it.
                 logger.error(
                     "Failed to redact %s (%s), blanking it. %s: %s",
                     elem.tag, elem.name, type(e).__name__, e,
@@ -611,7 +568,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     gliner_pii: UniEncoderSpanGLiNER, optional (default False)
         If set, the model will be used for anonymisation on top of Presidio's output.
 
-    use_case : str, optional (default 'Standard')
+    use_case : str, optional (default 'dicom_retain_patient_scan_private')
         * PS3.15 (alias 'dicom_default'): headers are de-identified with the
         DICOM PS3.15 Annex E Basic Application Level Confidentiality Profile;
         Presidio and GLiNER are not used on the headers.
@@ -622,9 +579,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         the matching PS3.15 variant for the standard headers, but private
         attributes are kept and scanned with the Presidio/GLiNER pipeline
         instead of being removed.
-        * Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
-        Presidio NER pipeline (plus GLiNER when gliner_pii is given) and
-        redacted.
+        * Any other value: use Presidio (plus GLiNER when gliner_pii is given).
 
     Returns
     -------
@@ -640,14 +595,10 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
 
     ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
     scan_private = ps3_15.scan_private_headers(use_case)
-    # The NER engines are needed for the full pipeline, for the private-header
-    # scan that the "..._scan_private" PS3.15 variants run on top of the profile,
-    # and for the free-text attributes the profile has no action for (only built
-    # when the dataset actually carries one, so plain PS3.15 stays cheap).
     ner_scanned_tags_present = ps3_15_mode and _contains_ner_scanned_tag(ds)
     if not ps3_15_mode or scan_private or ner_scanned_tags_present:
         if analyser is None:
-            analyser = _lazy_presidio_analyser(score_threshold)
+            analyser = _build_presidio_analyser(score_threshold)
         if anonymizer is None:
             anonymizer = AnonymizerEngine()
     if image_redactor is not None:
@@ -662,10 +613,6 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
             scan_private=scan_private,
         )
         if scan_private or ner_scanned_tags_present:
-            # Attributes the profile kept — private ones in the "..._scan_private"
-            # variants, plus the free-text ones Table E.1-1 has no action for —
-            # have their PHI scrubbed by the NER pipeline instead of being
-            # removed outright.
             _anonymise_ds(ds, analyser, anonymizer, score_threshold,
                           gliner_pii, use_case, anonymised_headers,
                           private_only=True)

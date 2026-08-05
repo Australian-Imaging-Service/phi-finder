@@ -454,7 +454,6 @@ def test_ps3_15_without_free_text_builds_no_analyser(monkeypatch):
         raise AssertionError("analyser should not be built")
 
     monkeypatch.setattr(anonymise_dicom, "_build_presidio_analyser", _fail)
-    monkeypatch.setattr(anonymise_dicom, "_ANALYSER_CACHE", {})
 
     dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
     assert "TextValue" not in dataset
