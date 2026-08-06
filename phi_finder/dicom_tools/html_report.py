@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pydicom
+from pydicom.datadict import dictionary_description
 from fileformats.generic import File
 from frametree.core.entry import DataEntry
 from frametree.core.row import DataRow
@@ -63,6 +64,53 @@ def _walk_note_text(ds: pydicom.dataset.Dataset,
         yield prefix + (elem.tag,), elem.name, value
 
 
+def _tag_name(tag: pydicom.tag.Tag) -> str:
+    """Returns a tag's human-readable name, falling back to its numeric form.
+
+    Parameters
+    ----------
+    tag : pydicom.tag.Tag
+        The tag to describe.
+
+    Returns
+    -------
+    str
+        The DICOM dictionary description, or ``str(tag)`` for private and
+        unknown tags that have no entry.
+    """
+    try:
+        return dictionary_description(tag)
+    except (KeyError, ValueError):
+        return str(tag)
+
+
+def _path_label(path: tuple, leaf_name: str = "") -> str:
+    """Renders an element ``path`` as a readable location.
+
+    A note nested inside sequences is reported as, e.g., ``"Content Sequence
+    [4] > Content Sequence [0] > Text Value"``, so two same-named elements in
+    different places in the tree can be told apart.
+
+    Parameters
+    ----------
+    path : tuple
+        An element path as produced by ``_walk_note_text``: alternating
+        sequence tag and item index, ending with the element's own tag.
+    leaf_name : str, optional
+        Name to use for the final component. Defaults to looking the tag up.
+
+    Returns
+    -------
+    str
+        The formatted location.
+    """
+    parts = [
+        f"{_tag_name(path[i])} [{path[i + 1]}]" for i in range(0, len(path) - 1, 2)
+    ]
+    parts.append(leaf_name or _tag_name(path[-1]))
+    return " > ".join(parts)
+
+
 def snapshot_long_text(ds: pydicom.dataset.Dataset) -> dict:
     """Records the free-text fields of a dataset before it is anonymised.
 
@@ -97,7 +145,13 @@ def collect_note_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dict
     Returns
     -------
     list of dict
-        One ``{"name", "original", "redacted"}`` entry per changed note. The
+        One ``{"name", "location", "original", "redacted", "removed"}`` entry
+        per changed note. ``"location"`` is the element's full path through any
+        enclosing sequences, which distinguishes same-named notes in different
+        places in the tree. ``"removed"`` is True when the element is gone from
+        the dataset altogether (e.g. the sequence holding it was emptied by the
+        PS3.15 profile) rather than redacted in place — both leave no text
+        behind, but only the latter means the value itself was scanned. The
         ``"original"`` value contains the un-redacted PHI, so callers must
         treat the result as sensitive.
     """
@@ -106,10 +160,17 @@ def collect_note_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dict
     for path, (name, original) in snapshot.items():
         if len(original) < _CLINICAL_NOTE_MIN_LENGTH:
             continue
+        removed = path not in current
         redacted = current.get(path, "")
         if redacted == original:
             continue
-        diffs.append({"name": name, "original": original, "redacted": redacted})
+        diffs.append({
+            "name": name,
+            "location": _path_label(path, name),
+            "original": original,
+            "redacted": redacted,
+            "removed": removed,
+        })
     return diffs
 
 
@@ -210,8 +271,10 @@ def build_html_report(flagged_headers: list[dict],
         value to make the output deterministic (e.g. in tests).
     note_diffs : list of dict, optional
         Clinical-note diffs accumulated over the session, as produced by
-        ``collect_note_diffs``. Each entry needs ``"name"``, ``"original"``
-        and ``"redacted"`` keys. Identical diffs (same note repeated across
+        ``collect_note_diffs``. Each entry needs ``"name"``, ``"original"`` and
+        ``"redacted"`` keys, and may carry ``"location"`` (used in place of the
+        name as the heading) and ``"removed"`` (rendered as a deleted rather
+        than a redacted field). Identical diffs (same note repeated across
         slices) are de-duplicated. Defaults to no diffs.
 
     Returns
@@ -256,27 +319,38 @@ def build_html_report(flagged_headers: list[dict],
         )
 
     # De-duplicate identical note diffs (the same report repeats across slices).
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, bool]] = set()
     diff_blocks = []
     for diff in note_diffs or []:
         original = diff.get("original", "")
         redacted = diff.get("redacted", "")
         name = (diff.get("name") or "").strip()
-        key = (name, original, redacted)
+        location = (diff.get("location") or "").strip() or name
+        removed = bool(diff.get("removed"))
+        key = (location, original, redacted, removed)
         if key in seen:
             continue
         seen.add(key)
-        heading = esc(name) if name else "Clinical note"
-        diff_blocks.append(
-            f"    <h3>{heading}</h3>\n"
-            f'    <p class="diff">{_render_text_diff(original, redacted)}</p>'
-        )
+        heading = esc(location) if location else "Clinical note"
+        if removed:
+            # The element is gone, so there is nothing to diff against: show
+            # the whole original as deleted and say so, rather than letting it
+            # look like a thorough in-place redaction.
+            badge = '<span class="badge badge-removed">removed entirely</span>'
+            body = f'    <p class="diff diff-removed"><del>{esc(original)}</del></p>'
+        else:
+            badge = '<span class="badge badge-redacted">redacted in place</span>'
+            body = f'    <p class="diff">{_render_text_diff(original, redacted)}</p>'
+        diff_blocks.append(f"    <h3>{heading} {badge}</h3>\n{body}")
 
     if diff_blocks:
         diff_intro = (
             "    <p>The following free-text note(s) contained personal or "
-            "health information. Text that was removed is struck through; the "
-            "replacement is underlined. <strong>This section reproduces the "
+            "health information. A field marked <em>redacted in place</em> is "
+            "still in the image, with the removed text struck through and its "
+            "replacement underlined; a field marked <em>removed entirely</em> "
+            "was deleted from the image altogether, so its whole original "
+            "value is struck through. <strong>This section reproduces the "
             "original information and must be handled accordingly.</strong></p>"
         )
         diff_section = "\n  <h2>Clinical notes</h2>\n" + diff_intro + "\n" + "\n".join(diff_blocks)
@@ -305,6 +379,12 @@ def build_html_report(flagged_headers: list[dict],
     li {{ margin: 0.15rem 0; }}
     .diff {{ white-space: pre-wrap; background: #fafafa; border: 1px solid #eee;
              border-radius: 6px; padding: 0.75rem 1rem; }}
+    .diff-removed {{ background: #fff7f7; border-color: #f0cdcd; }}
+    .badge {{ font-size: 0.7rem; font-weight: normal; text-transform: uppercase;
+              letter-spacing: 0.03em; padding: 0.1rem 0.4rem; border-radius: 3px;
+              vertical-align: middle; white-space: nowrap; }}
+    .badge-redacted {{ background: #e6f0e6; color: #060; border: 1px solid #cde0cd; }}
+    .badge-removed {{ background: #fde8e8; color: #900; border: 1px solid #f0cdcd; }}
     del {{ background: #fdd; color: #900; }}
     ins {{ background: #dfd; color: #060; text-decoration: none; }}
     footer {{ margin-top: 2rem; font-size: 0.8rem; color: #777; }}

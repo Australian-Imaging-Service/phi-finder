@@ -77,6 +77,115 @@ def test_collect_note_diffs_reaches_into_sequences():
     assert diffs[0]["original"] == note
 
 
+def test_collect_note_diffs_labels_nested_location():
+    # A nested note is reported with its full path, not just its element name.
+    ds = pydicom.Dataset()
+    item = pydicom.Dataset()
+    note = "A" * (html_report._CLINICAL_NOTE_MIN_LENGTH + 3)
+    item.add_new(0x001021B0, "LT", note)
+    ds.add_new(0x00081115, "SQ", pydicom.Sequence([item]))
+
+    snapshot = html_report.snapshot_long_text(ds)
+    ds[0x00081115].value[0][0x001021B0].value = "XXXX"
+    diffs = html_report.collect_note_diffs(snapshot, ds)
+
+    assert diffs[0]["location"] == (
+        "Referenced Series Sequence [0] > Additional Patient History"
+    )
+    assert diffs[0]["removed"] is False
+
+
+def test_collect_note_diffs_flags_removed_element():
+    # A note that vanished with its enclosing sequence is flagged as removed,
+    # not reported as an in-place redaction that happened to blank everything.
+    ds = pydicom.Dataset()
+    item = pydicom.Dataset()
+    note = "B" * (html_report._CLINICAL_NOTE_MIN_LENGTH + 3)
+    item.add_new(0x001021B0, "LT", note)
+    ds.add_new(0x00081115, "SQ", pydicom.Sequence([item]))
+
+    snapshot = html_report.snapshot_long_text(ds)
+    ds[0x00081115].value = pydicom.Sequence([])  # the PS3.15 "D" action
+    diffs = html_report.collect_note_diffs(snapshot, ds)
+
+    assert len(diffs) == 1
+    assert diffs[0]["removed"] is True
+    assert diffs[0]["redacted"] == ""
+
+
+def test_collect_note_diffs_separates_duplicate_note_copies():
+    # Regression: an SR carrying the same text at the root and inside Content
+    # Sequence must report both copies separately -- the nested one removed
+    # with the sequence, the root one redacted in place.
+    ds = pydicom.Dataset()
+    note = "CT BRAIN. Patient John Smith, 82 year old male, presented today."
+    inner = pydicom.Dataset()
+    inner.add_new(0x0040A160, "UT", note)
+    outer = pydicom.Dataset()
+    outer.add_new(0x0040A730, "SQ", pydicom.Sequence([inner]))
+    ds.add_new(0x0040A160, "UT", note)
+    ds.add_new(0x0040A730, "SQ", pydicom.Sequence([outer]))
+
+    snapshot = html_report.snapshot_long_text(ds)
+    ds[0x0040A730].value = pydicom.Sequence([])  # profile empties the sequence
+    ds[0x0040A160].value = "CT BRAIN. Patient XXXX, XXXX, presented today."
+    diffs = html_report.collect_note_diffs(snapshot, ds)
+
+    by_location = {d["location"]: d for d in diffs}
+    assert set(by_location) == {
+        "Text Value",
+        "Content Sequence [0] > Content Sequence [0] > Text Value",
+    }
+    assert by_location["Text Value"]["removed"] is False
+    assert "John Smith" not in by_location["Text Value"]["redacted"]
+    nested = by_location["Content Sequence [0] > Content Sequence [0] > Text Value"]
+    assert nested["removed"] is True
+
+
+def test_build_html_report_marks_removed_and_redacted_distinctly():
+    diffs = [
+        {
+            "name": "Text Value",
+            "location": "Text Value",
+            "original": "Patient John Smith presented with a headache today.",
+            "redacted": "Patient XXXX presented with a headache today.",
+            "removed": False,
+        },
+        {
+            "name": "Text Value",
+            "location": "Content Sequence [4] > Text Value",
+            "original": "Patient John Smith presented with a headache today.",
+            "redacted": "",
+            "removed": True,
+        },
+    ]
+    html = html_report.build_html_report([], n_images=1, note_diffs=diffs)
+
+    # Both copies are shown, told apart by location rather than by name alone.
+    assert "Content Sequence [4] &gt; Text Value" in html
+    assert "removed entirely" in html
+    assert "redacted in place" in html
+    # The removed one is not rendered as a word-level redaction.
+    assert html.count("<ins>XXXX</ins>") == 1
+
+
+def test_build_html_report_dedupes_per_location_not_per_name():
+    # Same name, different place in the tree: both must survive de-duplication.
+    base = {
+        "name": "Text Value",
+        "original": "Patient John Smith presented with a headache today.",
+        "redacted": "",
+        "removed": True,
+    }
+    diffs = [
+        {**base, "location": "Content Sequence [1] > Text Value"},
+        {**base, "location": "Content Sequence [4] > Text Value"},
+        {**base, "location": "Content Sequence [4] > Text Value"},  # true duplicate
+    ]
+    html = html_report.build_html_report([], n_images=1, note_diffs=diffs)
+    assert html.count("<h3>") == 2
+
+
 def test_build_html_report_includes_note_diff():
     diffs = [
         {
