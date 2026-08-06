@@ -169,32 +169,44 @@ def test_private_creator_untouched_in_standard_mode():
 
 
 def test_build_engines_plain_ps3_15(monkeypatch):
-    def _fail(*args, **kwargs):
-        raise AssertionError("engine builder should not be called")
+    # Even a plain PS3.15 use case gets the NER engines: the profile has no
+    # action for _NER_SCANNED_TAGS (e.g. SR Text Value), so anonymise_image
+    # scans those in every variant. Building them once here keeps it from
+    # building its own for each file that carries one -- and keeps the caller's
+    # spacy model instead of falling back to the default.
+    analyser_sentinel = object()
+    gliner_sentinel = object()
+    models_built = []
 
-    sentinel = object()
-    monkeypatch.setattr(anonymise_dicom, "_build_presidio_analyser", _fail)
-    monkeypatch.setattr(anonymise_dicom, "_build_transformer", lambda: sentinel)
+    def _record(score_threshold, spacy_model_name):
+        models_built.append(spacy_model_name)
+        return analyser_sentinel
 
-    engines = utils._build_engines(
+    monkeypatch.setattr(anonymise_dicom, "_build_presidio_analyser", _record)
+    monkeypatch.setattr(anonymise_dicom, "_build_transformer", lambda: gliner_sentinel)
+
+    analyser, anonymizer, image_redactor, gliner_pii = utils._build_engines(
         use_case="PS3.15",
         score_threshold=0.5,
-        spacy_model_name="en_core_web_md",
+        spacy_model_name="en_core_web_sm",
         destroy_pixels=True,
         use_transformers=False,
     )
-    assert engines == (None, None, None, None)
+    assert analyser is analyser_sentinel
+    assert anonymizer is not None
+    assert image_redactor is None
+    assert gliner_pii is None
+    assert models_built == ["en_core_web_sm"]  # the caller's model, not the default
 
     # GLiNER is built whenever it was asked for, so the free-text scan gets it.
-    analyser, anonymizer, image_redactor, gliner_pii = utils._build_engines(
+    _, _, _, gliner_pii = utils._build_engines(
         use_case="PS3.15",
         score_threshold=0.5,
         spacy_model_name="en_core_web_md",
         destroy_pixels=True,
         use_transformers=True,
     )
-    assert (analyser, anonymizer, image_redactor) == (None, None, None)
-    assert gliner_pii is sentinel
+    assert gliner_pii is gliner_sentinel
 
 
 def test_structural_cs_values_untouched():

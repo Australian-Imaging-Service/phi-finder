@@ -51,8 +51,8 @@ def _build_engines(use_case: str,
     """Builds the engines deidentify_dicom_files needs for a given use case.
 
     In the PS3.15 use cases the standard headers are handled by the basic
-    profile. The NER engines (Presidio and GLiNER) are only needed when the 
-    full NER pipeline runs on the headers, or for the "..._scan_private" variants.
+    profile. The NER models (Presidio and GLiNER) are needed for the "..._scan_private" variants, 
+    and for the free-text attributes the profile has no action for (``_NER_SCANNED_TAGS``).
     Presidio also redacts burned-in pixel PHI (if destroy_pixels=False).
 
     Parameters
@@ -79,7 +79,7 @@ def _build_engines(use_case: str,
         use case does not need it.
     """
     ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
-    ner_needed = not ps3_15_mode or ps3_15.scan_private_headers(use_case)
+    ner_needed = not ps3_15_mode or ps3_15.scan_private_headers(use_case) or bool(anonymise_dicom._NER_SCANNED_TAGS)
     if ner_needed or destroy_pixels is False:
         analyser = anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
     else:
@@ -92,17 +92,13 @@ def _build_engines(use_case: str,
         )
     else:
         image_redactor = None
-    # GLiNER is built whenever the caller asked for it: even a PS3.15 use case
-    # that leaves the standard headers to the profile runs the NER pipeline over
-    # the free-text attributes the profile has no action for (e.g. SR Text
-    # Value), and those are exactly the long values GLiNER is there to catch.
     gliner_pii = anonymise_dicom._build_transformer() if use_transformers else None
     return analyser, anonymizer, image_redactor, gliner_pii
 
 
 def deidentify_dicom_files(data_row: DataRow,
                            score_threshold: float=0.5,
-                           spacy_model_name: str="en_core_web_md",
+                           spacy_model_name: str="en_core_web_lg",
                            destroy_pixels: bool=True,
                            use_transformers: bool=False,
                            dry_run: bool=False,
@@ -123,7 +119,7 @@ def deidentify_dicom_files(data_row: DataRow,
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation.
 
-    spacy_model_name : str, optional (default "en_core_web_md")
+    spacy_model_name : str, optional (default "en_core_web_lg")
         The name of the SpaCy model to use for NLP processing.
         Other options include "en_core_web_sm" and "en_core_web_lg".
     
@@ -215,13 +211,16 @@ def deidentify_dicom_files(data_row: DataRow,
                 # Snapshot the long free-text fields before anonymise_image
                 # mutates the dataset in place, so we can diff them afterwards.
                 note_snapshot = html_report.snapshot_long_text(dcm)
-                anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
-                                                                 analyser=analyser,
-                                                                 anonymizer=anonymizer,
-                                                                 image_redactor=image_redactor,
-                                                                 score_threshold=score_threshold,
-                                                                 gliner_pii=gliner_pii,
-                                                                 use_case=use_case)
+                anonymised_dcm = anonymise_dicom.anonymise_image(
+                    dcm,
+                    analyser=analyser,
+                    anonymizer=anonymizer,
+                    image_redactor=image_redactor,
+                    score_threshold=score_threshold,
+                    gliner_pii=gliner_pii,
+                    use_case=use_case,
+                    spacy_model_name=spacy_model_name,
+                )
                 report_headers.extend(html_report.read_flagged_headers(anonymised_dcm))
                 note_diffs.extend(html_report.collect_note_diffs(note_snapshot, anonymised_dcm))
                 n_images += 1

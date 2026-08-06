@@ -63,7 +63,7 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
 
 
 def _build_presidio_analyser(score_threshold: float=0.5,
-                             spacy_model_name: str="en_core_web_md") -> AnalyzerEngine:
+                             spacy_model_name: str="en_core_web_lg") -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
 
     Parameters
@@ -72,7 +72,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation. Default is 0.5.
     spacy_model_name : str, optional
-        The name of the SpaCy model to use for NLP processing. Default is "en_core_web_md".
+        The name of the SpaCy model to use for NLP processing. Default is "en_core_web_lg".
         Other options include "en_core_web_sm" and "en_core_web_lg".
         
     Returns
@@ -319,12 +319,12 @@ def _build_presidio_analyser(score_threshold: float=0.5,
 
 def _build_transformer() -> UniEncoderSpanGLiNER:
     model = GLiNER.from_pretrained("nvidia/gliner-pii")#, max_length=384)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cpu')#torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
-    if torch.cuda.is_available():
-        model.compile()
-        torch.set_float32_matmul_precision('high')
+    #if torch.cuda.is_available():
+    #    model.compile()
+    #    torch.set_float32_matmul_precision('high')
     return model
 
 
@@ -357,11 +357,7 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
         "age", "profession", "gender", "name",
         "sex", "language", "ethnicity",
         "country", "city", "state", "suburb",
-        "location", "person", "organization",
-        "phone number", "address", "passport number",
-        "email", "social security number", "health insurance id number",
-        "date of birth", "mobile phone number",
-        "health insurance number",
+        "location", "person", "organization"
     ]
     # merged collapses overlapping entity spans into non-overlapping
     # ones so the slice-replacement at the end doesn't
@@ -544,7 +540,9 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
                     gliner_pii: UniEncoderSpanGLiNER=None,
-                    use_case: str='Standard') -> dicom.dataset.FileDataset:
+                    use_case: str='Standard',
+                    spacy_model_name: str="en_core_web_lg",
+                    ) -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
 
     Parameters
@@ -581,6 +579,9 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         instead of being removed.
         * Any other value: use Presidio (plus GLiNER when gliner_pii is given).
 
+    spacy_model_name : str, optional (default "en_core_web_lg")
+        Only used when ``analyser`` is not supplied and one has to be built here.
+
     Returns
     -------
     pydicom.dataset.FileDataset
@@ -598,7 +599,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     ner_scanned_tags_present = ps3_15_mode and _contains_ner_scanned_tag(ds)
     if not ps3_15_mode or scan_private or ner_scanned_tags_present:
         if analyser is None:
-            analyser = _build_presidio_analyser(score_threshold)
+            analyser = _build_presidio_analyser(score_threshold, spacy_model_name)
         if anonymizer is None:
             anonymizer = AnonymizerEngine()
     if image_redactor is not None:
