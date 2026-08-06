@@ -130,6 +130,7 @@ def test_age_string_replaced_with_valid_sentinel():
         score_threshold=0.5,
         gliner_pii=None,
         use_case="Standard",
+        spacy_model_name="en_core_web_sm"
     )
     assert anonymised_dataset.PatientAge == "000Y"
     flagged = json.loads(anonymised_dataset[0x0209, 0x1000].value)
@@ -146,6 +147,7 @@ def test_specific_character_set_untouched():
     anonymised_dataset = anonymise_dicom.anonymise_image(
         dataset,
         use_case="Standard",
+        spacy_model_name="en_core_web_sm"
     )
     assert anonymised_dataset.SpecificCharacterSet == "ISO 2022 IR 100"
 
@@ -160,7 +162,7 @@ def test_private_creator_untouched_in_standard_mode():
     priv_tag = block.get_tag(0x01)
     creator_tag = pydicom.tag.Tag(priv_tag.group, priv_tag.element >> 8)
 
-    anonymised = anonymise_dicom.anonymise_image(dataset, use_case="Standard")
+    anonymised = anonymise_dicom.anonymise_image(dataset, use_case="Standard",spacy_model_name="en_core_web_sm")
 
     assert str(anonymised[creator_tag].value) == "SIEMENS CSA HEADER"
     # The block's data elements are still scanned and scrubbed.
@@ -221,9 +223,19 @@ def test_structural_cs_values_untouched():
         score_threshold=0.5,
         gliner_pii=None,
         use_case="Standard",
+        spacy_model_name="en_core_web_sm"
     )
     assert list(anonymised_dataset.ImageType) == ["ORIGINAL", "PRIMARY", "M", "ND"]
     assert anonymised_dataset.Modality == "CT"
+
+
+@pytest.fixture(scope="module")
+def presidio_analyser():
+    """The default-model analyser, built once for the whole module.
+
+    Otherwise each build keeps ~0.6 GB alive between tests.
+    """
+    return anonymise_dicom._build_presidio_analyser(0.5)
 
 
 TEST_STRINGS_PII = ["John Doe",
@@ -233,8 +245,8 @@ TEST_STRINGS_PII = ["John Doe",
                     "01/01/1980",
                     "F", "M", "19430617", "076Y"]
 @pytest.mark.parametrize("test_string", TEST_STRINGS_PII)
-def test_presidio_regex_sensitive(test_string: str):
-    analyser = anonymise_dicom._build_presidio_analyser(0.5)
+def test_presidio_regex_sensitive(test_string: str, presidio_analyser):
+    analyser = presidio_analyser
     anonymizer = AnonymizerEngine()
     analyzer_results = analyser.analyze(
                     text=test_string, language="en", score_threshold=0.5
@@ -251,8 +263,8 @@ def test_presidio_regex_sensitive(test_string: str):
 
 TEST_STRINGS_CLEAN = ["Not sensitive", "Flat tire", "Most common"]
 @pytest.mark.parametrize("test_string", TEST_STRINGS_CLEAN)
-def test_presidio_regex_clean(test_string: str):
-    analyser = anonymise_dicom._build_presidio_analyser(0.5)
+def test_presidio_regex_clean(test_string: str, presidio_analyser):
+    analyser = presidio_analyser
     anonymizer = AnonymizerEngine()
     analyzer_results = analyser.analyze(
                     text=test_string, language="en", score_threshold=0.5
@@ -276,7 +288,8 @@ def test_anonymise_image():
                                                          image_redactor=None,
                                                          score_threshold=0.5,
                                                          gliner_pii=None,
-                                                         use_case="Standard")
+                                                         use_case="Standard",
+                                                         spacy_model_name="en_core_web_sm")
     assert anonymised_dataset.PatientName == PersonName('XXXX')
     #assert anonymised_dataset[0x0010, 0x0040].value != 'XXXX'  # Sex unchanged
     if anonymised_dataset[0x0010, 0x0030].value != '':
@@ -306,6 +319,7 @@ def test_anonymise_ds_recurses_into_sq():
         score_threshold=0.5,
         gliner_pii=None,
         use_case="Standard",
+        spacy_model_name="en_core_web_sm"
     )
 
     assert anonymised_dataset.PatientName == PersonName("XXXX")
@@ -335,6 +349,7 @@ def test_anonymise_image_ps3_15_use_case():
         score_threshold=0.5,
         gliner_pii=None,
         use_case="PS3.15",
+        spacy_model_name="en_core_web_sm"
     )
     assert str(anonymised_dataset.PatientName) == ""  # Z
     assert anonymised_dataset.PatientBirthDate == ""  # Z
@@ -368,6 +383,7 @@ def test_anonymise_image_ps3_15_retain_patient_characteristics():
         score_threshold=0.5,
         gliner_pii=None,
         use_case="PS3.15_Rtn. Pat.",
+        spacy_model_name="en_core_web_sm"
     )
     # Patient characteristics retained.
     assert anonymised_dataset.PatientAge == "076Y"
@@ -398,7 +414,7 @@ def test_anonymise_image_scan_private_keeps_and_scrubs_private():
     creator_tag = pydicom.tag.Tag(priv_tag.group, priv_tag.element >> 8)
 
     anonymised = anonymise_dicom.anonymise_image(
-        dataset, use_case="dicom_default_scan_private"
+        dataset, use_case="dicom_default_scan_private", spacy_model_name="en_core_web_sm"
     )
 
     # Standard headers are still de-identified by the Basic Profile.
@@ -415,7 +431,7 @@ def test_anonymise_image_scan_private_keeps_and_scrubs_private():
     plain = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
     pblock = plain.private_block(0x0011, "John Doe", create=True)
     pblock.add_new(0x01, "LO", "Jane Smith")
-    plain_anon = anonymise_dicom.anonymise_image(plain, use_case="dicom_default")
+    plain_anon = anonymise_dicom.anonymise_image(plain, use_case="dicom_default", spacy_model_name="en_core_web_sm")
     assert pblock.get_tag(0x01) not in plain_anon
 
 
@@ -443,7 +459,7 @@ def test_ps3_15_scans_sr_text_value(use_case):
     # Profile leaves it alone. It holds the whole narrative report of an SR, so
     # every PS3.15 variant must run the NER pipeline over it rather than let it
     # through untouched.
-    anonymised = anonymise_dicom.anonymise_image(_sr_dataset(), use_case=use_case)
+    anonymised = anonymise_dicom.anonymise_image(_sr_dataset(), use_case=use_case, spacy_model_name="en_core_web_sm")
 
     text_value = str(anonymised[0x0040, 0xA160].value)
     # The report itself is kept -- it is scrubbed, not removed.
@@ -469,5 +485,5 @@ def test_ps3_15_without_free_text_builds_no_analyser(monkeypatch):
 
     dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
     assert "TextValue" not in dataset
-    anonymised = anonymise_dicom.anonymise_image(dataset, use_case="dicom_default")
+    anonymised = anonymise_dicom.anonymise_image(dataset, use_case="dicom_default", spacy_model_name="en_core_web_sm")
     assert anonymised.PatientIdentityRemoved == "YES"

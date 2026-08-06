@@ -1,7 +1,8 @@
 import pydicom
+from presidio_analyzer import RecognizerResult
 from pydicom.data import get_testdata_files
 
-from phi_finder.dicom_tools import anonymise_dicom, html_report
+from phi_finder.dicom_tools import anonymise_dicom, html_report, ps3_15
 
 
 def test_render_text_diff_marks_removed_and_inserted():
@@ -234,10 +235,89 @@ def test_build_html_report_lists_and_dedupes_header_names():
     assert "removed the following types" in html
 
 
+def test_build_html_report_splits_findings_by_source():
+    # Headers the PS3.15 action map handled and headers the NER models read are
+    # reported under separate sections, so it is clear which did what.
+    flagged = [
+        {"tag": "(0010,0010)", "name": "Patient's Name",
+         "source": ps3_15.SOURCE_PS3_15},
+        {"tag": "(0008,0080)", "name": "Institution Name",
+         "source": ps3_15.SOURCE_PS3_15},
+        {"tag": "(0040,A160)", "name": "Text Value",
+         "source": anonymise_dicom.SOURCE_NER},
+    ]
+    html = html_report.build_html_report(flagged, n_images=1)
+
+    assert "Removed by the DICOM PS3.15 profile" in html
+    assert "Found by the text-scanning models" in html
+    # Each name is listed once, under its own section.
+    assert html.count("<li>") == 3
+    ps3_section = html.index("Removed by the DICOM PS3.15 profile")
+    ner_section = html.index("Found by the text-scanning models")
+    assert ps3_section < html.index("Institution Name") < ner_section
+    assert ner_section < html.index("Text Value")
+
+
+def test_build_html_report_omits_empty_finding_sections():
+    # A run with only one kind of finding shows only that section.
+    flagged = [{"tag": "(0040,A160)", "name": "Text Value",
+                "source": anonymise_dicom.SOURCE_NER}]
+    html = html_report.build_html_report(flagged, n_images=1)
+
+    assert "Found by the text-scanning models" in html
+    assert "Removed by the DICOM PS3.15 profile" not in html
+
+
+def test_build_html_report_handles_headers_without_source():
+    # Files anonymised before provenance was recorded still render, in a single
+    # unlabelled section using the original wording.
+    flagged = [{"tag": "(0010,0010)", "name": "Patient's Name"}]
+    html = html_report.build_html_report(flagged, n_images=1)
+
+    assert "removed the following types" in html
+    assert "Removed by the DICOM PS3.15 profile" not in html
+    assert "Found by the text-scanning models" not in html
+    assert html.count("<li>") == 1
+
+
+def test_build_html_report_no_findings_message_unchanged():
+    html = html_report.build_html_report([], n_images=1)
+    assert "found no personal or health information" in html
+    assert "<li>" not in html
+
+
+def test_flagged_headers_record_their_source(monkeypatch):
+    # anonymise_image stamps each record so the report can group them: the
+    # PS3.15 profile handles the standard headers, and the NER models read the
+    # free-text ones the profile has no action for.
+    # A stub analyser stands in for Presidio: this file is the model-free tier,
+    # and a real one would load a full spaCy pipeline just to find one name.
+    class _StubAnalyser:
+        def analyze(self, text, **kwargs):
+            start = text.find("John Smith")
+            if start < 0:
+                return []
+            return [RecognizerResult("PERSON", start, start + len("John Smith"), 0.9)]
+
+    monkeypatch.setattr(
+        anonymise_dicom, "_build_presidio_analyser",
+        lambda score_threshold, spacy_model_name: _StubAnalyser(),
+    )
+
+    ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    ds.add_new(0x0040A160, "UT", "CT BRAIN. Reported by Dr John Smith today.")
+    anonymised = anonymise_dicom.anonymise_image(ds, use_case="dicom_default", spacy_model_name="en_core_web_sm")
+
+    headers = html_report.read_flagged_headers(anonymised)
+    sources = {h["name"]: h["source"] for h in headers}
+    assert sources["Patient's Name"] == ps3_15.SOURCE_PS3_15
+    assert sources["Text Value"] == anonymise_dicom.SOURCE_NER
+
+
 def test_read_flagged_headers_round_trip():
     # anonymise_image records the flagged headers; read_flagged_headers reads them.
     ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
-    anonymised = anonymise_dicom.anonymise_image(ds, use_case="dicom_default")
+    anonymised = anonymise_dicom.anonymise_image(ds, use_case="dicom_default", spacy_model_name="en_core_web_sm")
     headers = html_report.read_flagged_headers(anonymised)
     assert isinstance(headers, list)
     assert all("name" in h and "tag" in h for h in headers)

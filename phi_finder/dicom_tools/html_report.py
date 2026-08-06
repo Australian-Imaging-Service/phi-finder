@@ -12,6 +12,8 @@ from fileformats.generic import File
 from frametree.core.entry import DataEntry
 from frametree.core.row import DataRow
 
+from phi_finder.dicom_tools import anonymise_dicom, ps3_15
+
 
 # Free-text VRs whose value can hold a clinical note (e.g. radiology report).
 _NOTE_TEXT_VRS = frozenset({"LO", "LT", "SH", "ST", "UC", "UT"})
@@ -19,6 +21,32 @@ _NOTE_TEXT_VRS = frozenset({"LO", "LT", "SH", "ST", "UC", "UT"})
 _CLINICAL_NOTE_MIN_LENGTH = 60
 # phi-finder's own audit element written by anonymise_image; never a note.
 _AUDIT_TAG = 0x02091000
+
+# Header findings are grouped by the "source" each record carries, in this
+# order. Records written before provenance was recorded have no source; they
+# fall into the trailing unlabelled group, which keeps their old rendering.
+_FINDING_SECTIONS: "list[tuple[str, str, str]]" = [
+    (
+        ps3_15.SOURCE_PS3_15,
+        "Removed by the DICOM PS3.15 profile",
+        "These header fields were de-identified by the DICOM PS3.15 Annex E "
+        "Basic Application Level Confidentiality Profile, which prescribes a "
+        "fixed action for each of them regardless of what they contained:",
+    ),
+    (
+        anonymise_dicom.SOURCE_NER,
+        "Found by the text-scanning models",
+        "The value of these header fields was read by phi-finder's "
+        "text-recognition models, which removed the parts that looked like "
+        "personal or health information:",
+    ),
+    (
+        "",
+        "",
+        "phi-finder found and removed the following types of personal or "
+        "health information from the image header fields:",
+    ),
+]
 
 
 def _walk_note_text(ds: pydicom.dataset.Dataset,
@@ -220,8 +248,9 @@ def read_flagged_headers(ds: pydicom.dataset.Dataset) -> list[dict]:
 
     ``anonymise_dicom.anonymise_image`` writes a private audit element at
     ``(0209,1000)`` (VR ``UT``, creator ``"phi-finder"``) holding a JSON list
-    of ``{"tag", "name"}`` dicts, one per header whose value was scrubbed.
-    This reads and parses that element.
+    of ``{"tag", "name", "source"}`` dicts, one per header whose value was
+    scrubbed, where ``"source"`` records what de-identified it. This reads and
+    parses that element.
 
     Parameters
     ----------
@@ -231,7 +260,9 @@ def read_flagged_headers(ds: pydicom.dataset.Dataset) -> list[dict]:
     Returns
     -------
     list of dict
-        One ``{"tag": str, "name": str}`` entry per flagged header. Empty when
+        One ``{"tag": str, "name": str, "source": str}`` entry per flagged
+        header (``"source"`` absent in files anonymised by older
+        versions). Empty when
         the audit tag is absent or unreadable, so callers building a report
         never crash on an un-anonymised or malformed file.
     """
@@ -257,7 +288,11 @@ def build_html_report(flagged_headers: list[dict],
         The flagged headers accumulated over the session, as produced by
         ``read_flagged_headers`` (may contain duplicates across images; they
         are de-duplicated here). Each entry needs a ``"name"`` key; ``"tag"``
-        is used as the de-duplication key when present.
+        is used as the de-duplication key when present, and ``"source"``
+        (``ps3_15.SOURCE_PS3_15`` or ``anonymise_dicom.SOURCE_NER``) selects
+        which findings section it is listed under. Entries with no ``"source"``
+        -- reports rebuilt from files anonymised before provenance was
+        recorded -- are listed together in a single unlabelled section.
     n_images : int
         Number of images (DICOM files) processed in the session, shown in the
         summary line.
@@ -285,15 +320,15 @@ def build_html_report(flagged_headers: list[dict],
     if generated_at is None:
         generated_at = datetime.now()
 
-    # De-duplicate by tag when available (stable identity), else by name.
-    unique: dict[str, str] = {}
+    # Group by what de-identified the header, de-duplicating by tag when
+    # available (stable identity) and else by name, within each group.
+    grouped: dict[str, dict[str, str]] = {}
     for header in flagged_headers:
         name = (header.get("name") or "").strip()
         if not name:
             continue
         key = header.get("tag") or name
-        unique[key] = name
-    names = sorted(set(unique.values()), key=str.casefold)
+        grouped.setdefault(header.get("source") or "", {})[key] = name
 
     def esc(value: object) -> str:
         return html.escape(str(value))
@@ -305,13 +340,17 @@ def build_html_report(flagged_headers: list[dict],
         summary_bits.append(f"method <strong>{esc(use_case)}</strong>")
     summary = " &middot; ".join(summary_bits)
 
-    if names:
-        intro = (
-            "phi-finder found and removed the following types of personal or "
-            "health information from the image header fields:"
-        )
+    finding_blocks = []
+    for source, title, intro in _FINDING_SECTIONS:
+        names = sorted(set(grouped.get(source, {}).values()), key=str.casefold)
+        if not names:
+            continue
         items = "\n".join(f"      <li>{esc(name)}</li>" for name in names)
-        findings = f"    <p>{intro}</p>\n    <ul>\n{items}\n    </ul>"
+        heading = f"  <h2>{esc(title)}</h2>\n" if title else ""
+        finding_blocks.append(f"{heading}    <p>{intro}</p>\n    <ul>\n{items}\n    </ul>")
+
+    if finding_blocks:
+        findings = "\n".join(finding_blocks)
     else:
         findings = (
             "    <p>phi-finder found no personal or health information to "

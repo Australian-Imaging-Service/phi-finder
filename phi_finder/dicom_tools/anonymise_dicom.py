@@ -22,6 +22,11 @@ from phi_finder.dicom_tools import ps3_15
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
+# Provenance stamped on each flagged-header record, so the de-identification
+# report can separate headers whose value was read and scrubbed by the NER
+# models from those the PS3.15 action map handled (see ps3_15.SOURCE_PS3_15).
+SOURCE_NER = "ner"
+
 
 def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
     """It sets all pixel values to 0.
@@ -460,7 +465,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             continue
         if elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
-            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
         elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
             continue
         elif elem.tag == (0x0010, 0x0030):  # Birthdate
@@ -477,12 +482,12 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # Fail-safe: if the format is unrecognised, scrub the value so the
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
-            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
         elif elem.VR == "AS":
             if str(elem.value).strip() in ("", "000Y"):
                 continue
             ds[elem.tag].value = "000Y"
-            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -516,7 +521,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
                     new_values.append(redacted)
                 if new_values != values:
-                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
                 if is_multi:
                     ds[elem.tag].value = dicom.multival.MultiValue(str, new_values)
                 else:
@@ -531,7 +536,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     ds[elem.tag].value = ""
                 except Exception:
                     del ds[elem.tag]
-                anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+                anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
 
 
 def anonymise_image(ds: dicom.dataset.FileDataset,
