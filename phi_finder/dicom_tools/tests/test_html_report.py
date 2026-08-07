@@ -1,3 +1,5 @@
+import json
+
 import pydicom
 from presidio_analyzer import RecognizerResult
 from pydicom.data import get_testdata_files
@@ -107,6 +109,47 @@ def test_collect_value_diffs_distinguishes_emptied_from_removed():
     assert diffs["Study Description"]["removed"] is False
     assert diffs["Study Description"]["redacted"] == ""
     assert diffs["Admitting Diagnoses Description"]["removed"] is True
+
+
+def test_collect_value_diffs_stamps_tag_and_source():
+    # Each diff carries the element's tag and what de-identified it, read back
+    # from the audit element anonymise_image wrote.
+    ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    snapshot = html_report.snapshot_values(ds)
+    anon = anonymise_dicom.anonymise_image(
+        ds, use_case="dicom_default", spacy_model_name="en_core_web_sm"
+    )
+    diffs = {d["name"]: d for d in html_report.collect_value_diffs(snapshot, anon)}
+
+    assert diffs["Patient's Name"]["tag"] == "(0010,0010)"
+    assert diffs["Patient's Name"]["source"] == ps3_15.SOURCE_PS3_15
+
+
+def test_collect_value_diffs_credits_the_sequence_a_value_vanished_with():
+    # The audit record is keyed by tag alone, so a nested value that is gone is
+    # credited to the sequence that held it, not to a same-named field
+    # elsewhere in the tree that a different engine handled.
+    ds = pydicom.Dataset()
+    inner = pydicom.Dataset()
+    inner.add_new(0x0040A160, "UT", "Reported by Dr John Smith.")
+    ds.add_new(0x0040A730, "SQ", pydicom.Sequence([inner]))  # Content Sequence
+    ds.add_new(0x0040A160, "UT", "Reported by Dr John Smith.")
+
+    snapshot = html_report.snapshot_values(ds)
+    ds[0x0040A730].value = pydicom.Sequence([])  # the profile removed it
+    ds[0x0040A160].value = "Reported by XXXX."  # the NER models redacted it
+    block = ds.private_block(0x0209, "phi-finder", create=True)
+    block.add_new(0x00, "UT", json.dumps([
+        {"tag": "(0040, a730)", "name": "Content Sequence",
+         "source": ps3_15.SOURCE_PS3_15},
+        {"tag": "(0040, a160)", "name": "Text Value",
+         "source": anonymise_dicom.SOURCE_NER},
+    ]))
+    diffs = {d["location"]: d for d in html_report.collect_value_diffs(snapshot, ds)}
+
+    assert diffs["Text Value"]["source"] == anonymise_dicom.SOURCE_NER
+    nested = diffs["Content Sequence [0] > Text Value"]
+    assert nested["source"] == ps3_15.SOURCE_PS3_15
 
 
 def test_collect_value_diffs_reaches_into_sequences():
@@ -265,7 +308,7 @@ def test_build_html_report_dedupes_identical_note_diffs():
 def test_build_html_report_omits_diff_section_without_notes():
     html = html_report.build_html_report([], n_images=1, value_diffs=None)
     assert "Clinical notes" not in html
-    assert "Changed field values" not in html
+    assert "Changed fields" not in html
     assert "<del>" not in html
     assert 'class="diff"' not in html
 
@@ -275,18 +318,22 @@ def test_build_html_report_tabulates_short_value_changes():
     # every changed field is visible, not just the clinical notes.
     diffs = [
         {"name": "Patient's Name", "location": "Patient's Name",
-         "original": "Smith^John", "redacted": "XXXX",
-         "removed": False, "note": False},
+         "tag": "(0010,0010)", "original": "Smith^John", "redacted": "XXXX",
+         "removed": False, "note": False, "source": ps3_15.SOURCE_PS3_15},
         {"name": "Patient's Birth Date", "location": "Patient's Birth Date",
-         "original": "19430607", "redacted": "19430101",
-         "removed": False, "note": False},
+         "tag": "(0010,0030)", "original": "19430607", "redacted": "19430101",
+         "removed": False, "note": False, "source": anonymise_dicom.SOURCE_NER},
     ]
     html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
 
-    assert "Changed field values" in html
+    assert "Changed fields" in html
     assert "<th>Original value</th>" in html
     assert '<td class="before">Smith^John</td><td class="after">XXXX</td>' in html
     assert '<td class="before">19430607</td><td class="after">19430101</td>' in html
+    # The tag and the engine that de-identified each field are shown too.
+    assert '<td class="tag">(0010,0010)</td>' in html
+    assert '<span class="pill pill-ps315">PS3.15</span>' in html
+    assert '<span class="pill pill-ner">NER model</span>' in html
     # Tabulated values are not also rendered as clinical notes.
     assert "Clinical notes" not in html
 
@@ -367,68 +414,42 @@ def test_build_html_report_escapes_table_values():
     assert "<script>" not in html
 
 
-def test_build_html_report_lists_and_dedupes_header_names():
-    # Header names are de-duplicated (by tag) and escaped in the findings list.
+def test_build_html_report_falls_back_to_names_without_values():
+    # With no diffs to show, the same table is rendered without the two columns
+    # that would reproduce the PHI: the fields are named, their values are not.
     flagged = [
-        {"tag": "(0010,0010)", "name": "Patient's Name"},
-        {"tag": "(0010,0010)", "name": "Patient's Name"},  # duplicate slice
-        {"tag": "(0010,0020)", "name": "Patient ID"},
-    ]
-    html = html_report.build_html_report(flagged, n_images=4)
-    assert html.count("<li>") == 2
-    assert "Patient&#x27;s Name" in html  # HTML-escaped
-    assert "removed the following types" in html
-
-
-def test_build_html_report_splits_findings_by_source():
-    # Headers the PS3.15 action map handled and headers the NER models read are
-    # reported under separate sections, so it is clear which did what.
-    flagged = [
-        {"tag": "(0010,0010)", "name": "Patient's Name",
+        {"tag": "(0010, 0010)", "name": "Patient's Name",
          "source": ps3_15.SOURCE_PS3_15},
-        {"tag": "(0008,0080)", "name": "Institution Name",
+        {"tag": "(0010, 0010)", "name": "Patient's Name",  # duplicate slice
          "source": ps3_15.SOURCE_PS3_15},
-        {"tag": "(0040,A160)", "name": "Text Value",
+        {"tag": "(0040, a160)", "name": "Text Value",
          "source": anonymise_dicom.SOURCE_NER},
     ]
-    html = html_report.build_html_report(flagged, n_images=1)
+    html = html_report.build_html_report(flagged, n_images=4)
 
-    assert "Removed by the DICOM PS3.15 profile" in html
-    assert "Found by the text-scanning models" in html
-    # Each name is listed once, under its own section.
-    assert html.count("<li>") == 3
-    ps3_section = html.index("Removed by the DICOM PS3.15 profile")
-    ner_section = html.index("Found by the text-scanning models")
-    assert ps3_section < html.index("Institution Name") < ner_section
-    assert ner_section < html.index("Text Value")
-
-
-def test_build_html_report_omits_empty_finding_sections():
-    # A run with only one kind of finding shows only that section.
-    flagged = [{"tag": "(0040,A160)", "name": "Text Value",
-                "source": anonymise_dicom.SOURCE_NER}]
-    html = html_report.build_html_report(flagged, n_images=1)
-
-    assert "Found by the text-scanning models" in html
-    assert "Removed by the DICOM PS3.15 profile" not in html
+    assert html.count("<tr><td>") == 2  # de-duplicated by tag
+    assert "Patient&#x27;s Name" in html  # HTML-escaped
+    assert '<td class="tag">(0010,0010)</td>' in html  # tidied for display
+    assert "<th>Original value</th>" not in html
+    assert '<span class="pill pill-ps315">PS3.15</span>' in html
+    assert '<span class="pill pill-ner">NER model</span>' in html
 
 
 def test_build_html_report_handles_headers_without_source():
-    # Files anonymised before provenance was recorded still render, in a single
-    # unlabelled section using the original wording.
-    flagged = [{"tag": "(0010,0010)", "name": "Patient's Name"}]
+    # Files anonymised before provenance was recorded still render; their
+    # Profile column is a dash rather than a wrong attribution.
+    flagged = [{"tag": "(0010, 0010)", "name": "Patient's Name"}]
     html = html_report.build_html_report(flagged, n_images=1)
 
-    assert "removed the following types" in html
-    assert "Removed by the DICOM PS3.15 profile" not in html
-    assert "Found by the text-scanning models" not in html
-    assert html.count("<li>") == 1
+    assert html.count("<tr><td>") == 1
+    assert '<td class="profile"><span class="muted">&mdash;</span></td>' in html
+    assert '<span class="pill' not in html  # no engine is credited
 
 
 def test_build_html_report_no_findings_message_unchanged():
     html = html_report.build_html_report([], n_images=1)
     assert "found no personal or health information" in html
-    assert "<li>" not in html
+    assert "<tr><td>" not in html
 
 
 def test_flagged_headers_record_their_source(monkeypatch):

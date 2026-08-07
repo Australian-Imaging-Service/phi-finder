@@ -32,31 +32,13 @@ _MAX_VALUES_PER_FIELD = 5
 # phi-finder's own audit element written by anonymise_image; never a note.
 _AUDIT_TAG = 0x02091000
 
-# Header findings are grouped by the "source" each record carries, in this
-# order. Records written before provenance was recorded have no source; they
-# fall into the trailing unlabelled group, which keeps their old rendering.
-_FINDING_SECTIONS: "list[tuple[str, str, str]]" = [
-    (
-        ps3_15.SOURCE_PS3_15,
-        "Removed by the DICOM PS3.15 profile",
-        "These header fields were de-identified by the DICOM PS3.15 Annex E "
-        "Basic Application Level Confidentiality Profile, which prescribes a "
-        "fixed action for each of them regardless of what they contained:",
-    ),
-    (
-        anonymise_dicom.SOURCE_NER,
-        "Found by the text-scanning models",
-        "The value of these header fields was read by phi-finder's "
-        "text-recognition models, which removed the parts that looked like "
-        "personal or health information:",
-    ),
-    (
-        "",
-        "",
-        "phi-finder found and removed the following types of personal or "
-        "health information from the image header fields:",
-    ),
-]
+# What each provenance stamp is called in the report's "Profile" column, and
+# the CSS class its pill gets. Records written before provenance was recorded
+# carry no source and are left unlabelled.
+_SOURCE_LABELS: "dict[str, tuple[str, str]]" = {
+    ps3_15.SOURCE_PS3_15: ("PS3.15", "pill-ps315"),
+    anonymise_dicom.SOURCE_NER: ("NER model", "pill-ner"),
+}
 
 
 def _walk_values(ds: pydicom.dataset.Dataset,
@@ -172,11 +154,77 @@ def snapshot_values(ds: pydicom.dataset.Dataset) -> dict:
     return {path: (name, value) for path, name, value in _walk_values(ds)}
 
 
+def _display_tag(tag: pydicom.tag.Tag) -> str:
+    """Formats a tag as ``(GGGG,EEEE)`` for display."""
+    return f"({tag.group:04X},{tag.element:04X})"
+
+
+def _tidy_tag(tag: str) -> str:
+    """Formats a recorded tag string (``"(0010, 0010)"``) the same way.
+
+    Parameters
+    ----------
+    tag : str
+        A tag as written in the audit element, i.e. ``str(Tag)``.
+
+    Returns
+    -------
+    str
+        The tag as ``(GGGG,EEEE)``, or the string unchanged when it does not
+        look like a tag (so nothing is lost from an unexpected record).
+    """
+    digits = re.sub(r"[^0-9a-fA-F]", "", tag or "")
+    if len(digits) != 8:
+        return tag
+    return f"({digits[:4].upper()},{digits[4:].upper()})"
+
+
+def _resolve_source(path: tuple, sources: dict, removed: bool) -> str:
+    """Finds which engine de-identified the element at ``path``.
+
+    The audit record names the element an action was applied to, which for a
+    deleted sequence is the sequence itself rather than each value inside it,
+    so nested values inherit their enclosing sequence's provenance. It is keyed
+    by tag alone, so two elements sharing a tag in different places in the tree
+    cannot be told apart; a nested value that is *gone* is therefore credited
+    to the sequence that held it before its own tag is tried, since that is
+    what usually took it away.
+
+    Parameters
+    ----------
+    path : tuple
+        An element path as produced by ``_walk_values``.
+    sources : dict
+        Maps a tag (in ``str(Tag)`` form, as recorded in the audit element) to
+        the source that de-identified it.
+    removed : bool
+        Whether the element is gone from the dataset altogether.
+
+    Returns
+    -------
+    str
+        The source, or the empty string when neither the element nor any
+        sequence holding it is in the audit record (e.g. a file anonymised
+        before provenance was recorded).
+    """
+    tags = path[0::2]  # enclosing sequence tags, then the element's own
+    order = list(reversed(tags))  # own tag first, then innermost sequence out
+    if removed and len(tags) > 1:
+        order = list(reversed(tags[:-1])) + [tags[-1]]
+    for tag in order:
+        source = sources.get(str(tag))
+        if source:
+            return source
+    return ""
+
+
 def collect_value_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dict]:
     """Diffs a pre-anonymisation snapshot against the de-identified dataset.
 
     Every element whose value changed is reported, not only the long free-text
-    ones: short identifiers, dates and UIDs included.
+    ones: short identifiers, dates and UIDs included. Each diff is stamped with
+    the provenance phi-finder recorded for that element (see
+    ``read_flagged_headers``), so the report can say what de-identified it.
 
     Parameters
     ----------
@@ -188,8 +236,9 @@ def collect_value_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dic
     Returns
     -------
     list of dict
-        One ``{"name", "location", "original", "redacted", "removed", "note"}``
-        entry per changed value. ``"location"`` is the element's full path
+        One ``{"name", "tag", "location", "original", "redacted", "removed",
+        "note", "private", "source"}`` entry per changed value.
+        ``"location"`` is the element's full path
         through any enclosing sequences, which distinguishes same-named fields
         in different places in the tree. ``"removed"`` is True when the element
         is gone from the dataset altogether (e.g. deleted by the PS3.15 profile,
@@ -202,9 +251,15 @@ def collect_value_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dic
         treat the result as sensitive. ``"private"`` marks a private
         (manufacturer-defined) attribute, which the report tabulates apart from
         the standard ones: a scanner writes hundreds of them and they would
-        otherwise bury the fields a reader is looking for.
+        otherwise bury the fields a reader is looking for. ``"source"`` is
+        ``ps3_15.SOURCE_PS3_15`` or ``anonymise_dicom.SOURCE_NER``, or the
+        empty string for a value phi-finder recorded no provenance for.
     """
     current = {path: value for path, _name, value in _walk_values(ds)}
+    sources = {
+        header.get("tag"): header.get("source", "")
+        for header in read_flagged_headers(ds)
+    }
     diffs = []
     for path, (name, original) in snapshot.items():
         removed = path not in current
@@ -213,12 +268,14 @@ def collect_value_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dic
             continue
         diffs.append({
             "name": name,
+            "tag": _display_tag(pydicom.tag.Tag(path[-1])),
             "location": _path_label(path, name),
             "original": original,
             "redacted": redacted,
             "removed": removed,
             "note": len(original) >= _CLINICAL_NOTE_MIN_LENGTH,
             "private": bool(pydicom.tag.Tag(path[-1]).is_private),
+            "source": _resolve_source(path, sources, removed),
         })
     return diffs
 
@@ -290,8 +347,16 @@ def _render_text_diff(original: str, redacted: str) -> str:
     return "".join(parts)
 
 
-def _render_value_rows(rows_by_field: "dict[str, list[tuple]]") -> str:
-    """Renders changed values as before/after table rows.
+def _source_pill(source: str) -> str:
+    """Renders a field's provenance as a pill, or a dash when unrecorded."""
+    label, css_class = _SOURCE_LABELS.get(source, ("", ""))
+    if not label:
+        return '<span class="muted">&mdash;</span>'
+    return f'<span class="pill {css_class}">{label}</span>'
+
+
+def _render_value_rows(rows_by_field: dict) -> str:
+    """Renders changed fields as before/after table rows.
 
     Fields are listed alphabetically; the values of a field keep the order they
     were met in, capped at ``_MAX_VALUES_PER_FIELD`` so a field that differs in
@@ -300,8 +365,9 @@ def _render_value_rows(rows_by_field: "dict[str, list[tuple]]") -> str:
     Parameters
     ----------
     rows_by_field : dict
-        Maps a field's location to its ``(original, redacted, removed)``
-        values, as gathered by ``build_html_report``.
+        Maps a field's location to a ``{"tag", "source", "values"}`` group, as
+        gathered by ``build_html_report``; ``"values"`` holds its
+        ``(original, redacted, removed)`` triples.
 
     Returns
     -------
@@ -310,8 +376,11 @@ def _render_value_rows(rows_by_field: "dict[str, list[tuple]]") -> str:
     """
     rows = []
     for field in sorted(rows_by_field, key=str.casefold):
-        values = rows_by_field[field]
+        group = rows_by_field[field]
+        values = group["values"]
         field_cell = html.escape(field) if field else "<em>(unnamed field)</em>"
+        tag_cell = f'<td class="tag">{html.escape(group["tag"])}</td>'
+        profile_cell = f'<td class="profile">{_source_pill(group["source"])}</td>'
         for original, redacted, removed in values[:_MAX_VALUES_PER_FIELD]:
             before = html.escape(original) if original else "<em>(blank)</em>"
             if removed:
@@ -319,31 +388,71 @@ def _render_value_rows(rows_by_field: "dict[str, list[tuple]]") -> str:
             else:
                 after = html.escape(redacted) if redacted else "<em>(emptied)</em>"
             rows.append(
-                f"      <tr><td>{field_cell}</td>"
+                f"      <tr><td>{field_cell}</td>{tag_cell}"
                 f'<td class="before">{before}</td>'
-                f'<td class="after">{after}</td></tr>'
+                f'<td class="after">{after}</td>{profile_cell}</tr>'
             )
         extra = len(values) - _MAX_VALUES_PER_FIELD
         if extra > 0:
             # Say what was left out: a silently truncated table reads as if the
             # field only ever held the values shown.
             rows.append(
-                f"      <tr><td>{field_cell}</td>"
-                f'<td class="more" colspan="2"><em>&hellip; and {extra} further '
+                f"      <tr><td>{field_cell}</td>{tag_cell}"
+                f'<td class="more" colspan="3">&hellip; and {extra} further '
                 "distinct value(s) for this field in this session, not shown."
-                "</em></td></tr>"
+                "</td></tr>"
             )
     return "\n".join(rows)
 
 
-def _value_table(rows: str) -> str:
-    """Wraps rendered rows in a horizontally scrollable before/after table."""
+def _render_field_rows(flagged_headers: list[dict]) -> str:
+    """Renders flagged headers as name/tag/profile rows, without their values.
+
+    This is what a report built with no ``value_diffs`` shows: the same table,
+    minus the two columns that would reproduce the PHI.
+
+    Parameters
+    ----------
+    flagged_headers : list of dict
+        Flagged-header records as produced by ``read_flagged_headers``.
+
+    Returns
+    -------
+    str
+        The ``<tr>`` rows, or the empty string when there is nothing to show.
+    """
+    by_key = {}
+    for header in flagged_headers:
+        name = (header.get("name") or "").strip()
+        if not name:
+            continue
+        by_key[header.get("tag") or name] = header
+    rows = []
+    for header in sorted(by_key.values(), key=lambda h: h["name"].casefold()):
+        tag = _tidy_tag(header.get("tag") or "")
+        rows.append(
+            f'      <tr><td>{html.escape(header["name"])}</td>'
+            f'<td class="tag">{html.escape(tag)}</td>'
+            f'<td class="profile">{_source_pill(header.get("source", ""))}</td></tr>'
+        )
+    return "\n".join(rows)
+
+
+def _value_table(rows: str, with_values: bool = True) -> str:
+    """Wraps rendered rows in a horizontally scrollable table."""
+    value_headers = (
+        "<th>Original value</th><th>After de-identification</th>"
+        if with_values else ""
+    )
     return (
         '    <div class="table-wrap">\n'
         "    <table>\n"
-        "      <tr><th>Field</th><th>Original value</th>"
-        "<th>After de-identification</th></tr>\n"
+        "      <thead>\n"
+        f"      <tr><th>Field</th><th>Tag</th>{value_headers}<th>Profile</th></tr>\n"
+        "      </thead>\n"
+        "      <tbody>\n"
         f"{rows}\n"
+        "      </tbody>\n"
         "    </table>\n"
         "    </div>"
     )
@@ -393,15 +502,17 @@ def build_html_report(flagged_headers: list[dict],
     flagged_headers : list of dict
         The flagged headers accumulated over the session, as produced by
         ``read_flagged_headers`` (may contain duplicates across images; they
-        are de-duplicated here). Each entry needs a ``"name"`` key; ``"tag"``
-        is used as the de-duplication key when present, and ``"source"``
-        (``ps3_15.SOURCE_PS3_15`` or ``anonymise_dicom.SOURCE_NER``) selects
-        which findings section it is listed under. Entries with no ``"source"``
-        -- reports rebuilt from files anonymised before provenance was
-        recorded -- are listed together in a single unlabelled section.
+        are de-duplicated here). Only used when ``value_diffs`` is not given,
+        as the fallback for a report that names the de-identified fields
+        without reproducing their values. Each entry needs a ``"name"`` key;
+        ``"tag"`` is used as the de-duplication key when present, and
+        ``"source"`` (``ps3_15.SOURCE_PS3_15`` or
+        ``anonymise_dicom.SOURCE_NER``) fills the Profile column. Entries with
+        no ``"source"`` -- rebuilt from files anonymised before provenance was
+        recorded -- show a dash there.
     n_images : int
         Number of images (DICOM files) processed in the session, shown in the
-        summary line.
+        summary.
     session_id : str, optional
         Human-readable session/study identifier, shown in the summary when given.
     use_case : str, optional
@@ -433,49 +544,16 @@ def build_html_report(flagged_headers: list[dict],
     if generated_at is None:
         generated_at = datetime.now()
 
-    # Group by what de-identified the header, de-duplicating by tag when
-    # available (stable identity) and else by name, within each group.
-    grouped: dict[str, dict[str, str]] = {}
-    for header in flagged_headers:
-        name = (header.get("name") or "").strip()
-        if not name:
-            continue
-        key = header.get("tag") or name
-        grouped.setdefault(header.get("source") or "", {})[key] = name
-
     def esc(value: object) -> str:
         return html.escape(str(value))
 
-    summary_bits = [f"<strong>{n_images}</strong> image(s) processed"]
-    if session_id:
-        summary_bits.append(f"session <strong>{esc(session_id)}</strong>")
-    if use_case:
-        summary_bits.append(f"method <strong>{esc(use_case)}</strong>")
-    summary = " &middot; ".join(summary_bits)
-
-    finding_blocks = []
-    for source, title, intro in _FINDING_SECTIONS:
-        names = sorted(set(grouped.get(source, {}).values()), key=str.casefold)
-        if not names:
-            continue
-        items = "\n".join(f"      <li>{esc(name)}</li>" for name in names)
-        heading = f"  <h2>{esc(title)}</h2>\n" if title else ""
-        finding_blocks.append(f"{heading}    <p>{intro}</p>\n    <ul>\n{items}\n    </ul>")
-
-    if finding_blocks:
-        findings = "\n".join(finding_blocks)
-    else:
-        findings = (
-            "    <p>phi-finder found no personal or health information to "
-            "remove from the image header fields.</p>"
-        )
-
     # De-duplicate identical diffs (the same field is redacted the same way in
-    # every slice of a series).
+    # every slice of a series), splitting them into the notes shown as
+    # word-level diffs and the ones tabulated -- private fields apart.
     seen: set[tuple] = set()
     diff_blocks = []
-    rows_by_field: dict[str, list[tuple[str, str, bool]]] = {}
-    private_rows_by_field: dict[str, list[tuple[str, str, bool]]] = {}
+    rows_by_field: dict[str, dict] = {}
+    private_rows_by_field: dict[str, dict] = {}
     for diff in value_diffs or []:
         key = diff_key(diff)
         if key in seen:
@@ -487,54 +565,69 @@ def build_html_report(flagged_headers: list[dict],
         # written for.
         if not diff.get("note", True):
             group = private_rows_by_field if diff.get("private") else rows_by_field
-            group.setdefault(location, []).append((original, redacted, removed))
+            field = group.setdefault(location, {
+                "tag": diff.get("tag", ""),
+                "source": diff.get("source", ""),
+                "values": [],
+            })
+            field["values"].append((original, redacted, removed))
             continue
         heading = esc(location) if location else "Clinical note"
+        pill = _source_pill(diff.get("source", ""))
         if removed:
             # The element is gone, so there is nothing to diff against: show
             # the whole original as deleted and say so, rather than letting it
             # look like a thorough in-place redaction.
             badge = '<span class="badge badge-removed">removed entirely</span>'
-            body = f'    <p class="diff diff-removed"><del>{esc(original)}</del></p>'
+            body = f'      <p class="diff diff-removed"><del>{esc(original)}</del></p>'
         else:
             badge = '<span class="badge badge-redacted">redacted in place</span>'
-            body = f'    <p class="diff">{_render_text_diff(original, redacted)}</p>'
-        diff_blocks.append(f"    <h3>{heading} {badge}</h3>\n{body}")
+            body = f'      <p class="diff">{_render_text_diff(original, redacted)}</p>'
+        diff_blocks.append(f"      <h3>{heading} {badge} {pill}</h3>\n{body}")
 
     if diff_blocks:
-        diff_intro = (
-            "    <p>The following free-text note(s) contained personal or "
+        diff_section = (
+            "\n    <section>\n      <h2>Clinical notes</h2>\n"
+            "      <p>The following free-text note(s) contained personal or "
             "health information. A field marked <em>redacted in place</em> is "
             "still in the image, with the removed text struck through and its "
             "replacement underlined; a field marked <em>removed entirely</em> "
             "was deleted from the image altogether, so its whole original "
-            "value is struck through. <strong>This section reproduces the "
-            "original information and must be handled accordingly.</strong></p>"
+            "value is struck through.</p>\n"
+            '      <p class="warning">This section reproduces the original '
+            "information and must be handled accordingly.</p>\n"
+            + "\n".join(diff_blocks) + "\n    </section>"
         )
-        diff_section = "\n  <h2>Clinical notes</h2>\n" + diff_intro + "\n" + "\n".join(diff_blocks)
     else:
         diff_section = ""
 
-    # Every other changed value, as a before/after table. The private
-    # (manufacturer) fields go in a folded-away table of their own: a scanner
-    # writes hundreds of them, and they would bury the standard fields.
+    # The changed values, as a before/after table. The private (manufacturer)
+    # fields go in a folded-away table of their own: a scanner writes hundreds
+    # of them, and they would bury the standard fields.
     table_rows = _render_value_rows(rows_by_field)
     private_rows = _render_value_rows(private_rows_by_field)
+    n_fields = len(rows_by_field) + len(private_rows_by_field) + len(diff_blocks)
 
     if table_rows or private_rows:
         notes_pointer = (
             " Longer free-text fields are shown in full under "
             "<em>Clinical notes</em> below." if diff_blocks else ""
         )
-        table_intro = (
-            "    <p>Every field whose value changed is listed below, as it was "
-            "before and after de-identification. <em>(field removed)</em> means "
-            "the field was deleted from the image; <em>(emptied)</em> means it "
-            "was kept but left blank." + notes_pointer + " <strong>This section "
-            "reproduces the original values, including the personal information "
-            "that was removed, and must be handled accordingly.</strong></p>"
+        table_section = (
+            "\n    <section>\n      <h2>Changed fields</h2>\n"
+            "      <p>Every field whose value changed is listed below, as it "
+            "was before and after de-identification. <em>(field removed)</em> "
+            "means the field was deleted from the image; <em>(emptied)</em> "
+            "means it was kept but left blank." + notes_pointer + " The "
+            "<strong>Profile</strong> column says what de-identified it: "
+            "<em>PS3.15</em> is the fixed action the DICOM Basic Confidentiality "
+            "Profile prescribes for that field, <em>NER model</em> means "
+            "phi-finder's text-recognition models read the value and removed "
+            "what looked like personal information.</p>\n"
+            '      <p class="warning">This section reproduces the original '
+            "values, including the personal information that was removed, and "
+            "must be handled accordingly.</p>"
         )
-        table_section = "\n  <h2>Changed field values</h2>\n" + table_intro
         if table_rows:
             table_section += "\n" + _value_table(table_rows)
         if private_rows:
@@ -542,13 +635,44 @@ def build_html_report(flagged_headers: list[dict],
             table_section += (
                 "\n    <details>\n"
                 f"      <summary>{n_private} private (manufacturer-defined) "
-                "field(s) also changed &mdash; click to show</summary>\n"
+                "field(s) also changed</summary>\n"
                 "      <p>Private fields are written by the scanner "
                 "manufacturer rather than defined by the DICOM standard.</p>\n"
                 + _value_table(private_rows) + "\n    </details>"
             )
+        table_section += "\n    </section>"
+    elif flagged_headers:
+        # No values to show (the caller passed no diffs), so report the same
+        # table without the two columns that would reproduce the PHI.
+        field_rows = _render_field_rows(flagged_headers)
+        n_fields = field_rows.count("<tr>")
+        table_section = (
+            "\n    <section>\n      <h2>Changed fields</h2>\n"
+            "      <p>phi-finder de-identified the header fields listed below. "
+            "The <strong>Profile</strong> column says what de-identified each "
+            "one: <em>PS3.15</em> is the fixed action the DICOM Basic "
+            "Confidentiality Profile prescribes for that field, <em>NER "
+            "model</em> means phi-finder's text-recognition models read the "
+            "value and removed what looked like personal information.</p>\n"
+            + _value_table(field_rows, with_values=False) + "\n    </section>"
+        )
     else:
-        table_section = ""
+        table_section = (
+            "\n    <section>\n      <p>phi-finder found no personal or health "
+            "information to remove from the image header fields.</p>\n"
+            "    </section>"
+        )
+
+    stats = [(esc(n_images), "image(s) processed"), (esc(n_fields), "field(s) changed")]
+    if session_id:
+        stats.append((esc(session_id), "session"))
+    if use_case:
+        stats.append((esc(use_case), "method"))
+    summary = "\n".join(
+        f'      <div class="stat"><span class="stat-value">{value}</span>'
+        f'<span class="stat-label">{label}</span></div>'
+        for value, label in stats
+    )
 
     footer = "Generated by phi-finder on " + esc(
         generated_at.strftime("%d %B %Y at %H:%M")
@@ -558,48 +682,92 @@ def build_html_report(flagged_headers: list[dict],
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>De-identification report</title>
   <style>
-    body {{ font-family: Arial, Helvetica, sans-serif; color: #222;
-           max-width: 860px; margin: 2rem auto; padding: 0 1rem;
-           line-height: 1.5; }}
-    h1 {{ font-size: 1.5rem; }}
-    h2 {{ font-size: 1.2rem; margin-top: 2rem; }}
-    h3 {{ font-size: 1rem; margin-bottom: 0.3rem; }}
-    .summary {{ background: #f2f6fb; border: 1px solid #d7e2f0;
-                border-radius: 6px; padding: 0.75rem 1rem; }}
-    ul {{ padding-left: 1.4rem; }}
-    li {{ margin: 0.15rem 0; }}
-    .diff {{ white-space: pre-wrap; background: #fafafa; border: 1px solid #eee;
-             border-radius: 6px; padding: 0.75rem 1rem; }}
-    .diff-removed {{ background: #fff7f7; border-color: #f0cdcd; }}
-    .badge {{ font-size: 0.7rem; font-weight: normal; text-transform: uppercase;
-              letter-spacing: 0.03em; padding: 0.1rem 0.4rem; border-radius: 3px;
-              vertical-align: middle; white-space: nowrap; }}
-    .badge-redacted {{ background: #e6f0e6; color: #060; border: 1px solid #cde0cd; }}
-    .badge-removed {{ background: #fde8e8; color: #900; border: 1px solid #f0cdcd; }}
-    del {{ background: #fdd; color: #900; }}
-    ins {{ background: #dfd; color: #060; text-decoration: none; }}
-    .table-wrap {{ overflow-x: auto; }}
-    table {{ border-collapse: collapse; width: 100%; font-size: 0.9rem; }}
-    th, td {{ border: 1px solid #e3e3e3; padding: 0.3rem 0.5rem;
-              text-align: left; vertical-align: top; overflow-wrap: anywhere; }}
-    th {{ background: #f2f6fb; font-weight: bold; }}
-    td.before {{ background: #fdf3f3; color: #900; }}
-    td.after {{ background: #f3faf3; color: #060; }}
-    td em, td.more {{ color: #777; }}
-    details {{ margin-top: 0.75rem; }}
-    summary {{ cursor: pointer; color: #345; }}
-    footer {{ margin-top: 2rem; font-size: 0.8rem; color: #777; }}
+    :root {{ --bg: #f4f6f8; --card: #fff; --ink: #1c2530; --muted: #67717e;
+             --line: #e3e7ec; --accent: #2f5d8c; }}
+    * {{ box-sizing: border-box; }}
+    body {{ font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+            Arial, sans-serif; background: var(--bg); color: var(--ink);
+            margin: 0; padding: 2rem 1rem; line-height: 1.55; }}
+    main {{ max-width: 1040px; margin: 0 auto; background: var(--card);
+            border: 1px solid var(--line); border-radius: 10px;
+            padding: 1.75rem 2rem 2rem;
+            box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06); }}
+    h1 {{ font-size: 1.6rem; margin: 0 0 0.2rem; letter-spacing: -0.01em; }}
+    .subtitle {{ margin: 0 0 1.25rem; color: var(--muted); }}
+    h2 {{ font-size: 1.15rem; margin: 0 0 0.5rem; padding-bottom: 0.3rem;
+          border-bottom: 2px solid var(--accent); display: inline-block; }}
+    h3 {{ font-size: 0.95rem; margin: 1.25rem 0 0.4rem; }}
+    section {{ margin-top: 2rem; }}
+    p {{ margin: 0.5rem 0 0.9rem; }}
+    .stats {{ display: flex; flex-wrap: wrap; gap: 0.75rem; }}
+    .stat {{ flex: 1 1 8rem; background: #f8fafc; border: 1px solid var(--line);
+             border-radius: 8px; padding: 0.55rem 0.8rem; }}
+    .stat-value {{ display: block; font-size: 1.2rem; font-weight: 600;
+                   overflow-wrap: anywhere; }}
+    .stat-label {{ display: block; font-size: 0.7rem; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: 0.05em; }}
+    .warning {{ background: #fff8e6; border: 1px solid #f0dca6;
+                border-left: 4px solid #d9a406; border-radius: 6px;
+                padding: 0.6rem 0.9rem; font-size: 0.9rem; }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid var(--line);
+                   border-radius: 8px; }}
+    table {{ border-collapse: collapse; width: 100%; font-size: 0.86rem; }}
+    th, td {{ text-align: left; vertical-align: top; padding: 0.45rem 0.6rem;
+              border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }}
+    thead th {{ position: sticky; top: 0; background: #f8fafc; color: var(--muted);
+                font-size: 0.72rem; text-transform: uppercase;
+                letter-spacing: 0.05em; white-space: nowrap; }}
+    tbody tr:last-child td {{ border-bottom: none; }}
+    td.tag, td.before, td.after {{ font-family: ui-monospace, SFMono-Regular,
+                                   Menlo, Consolas, monospace; font-size: 0.8rem; }}
+    td.tag {{ color: var(--muted); white-space: nowrap; }}
+    td.before {{ background: #fff5f5; color: #9b2226; }}
+    td.after {{ background: #f2faf5; color: #14663a; }}
+    td.profile {{ white-space: nowrap; }}
+    td.more {{ color: var(--muted); font-style: italic; }}
+    td em {{ color: var(--muted); }}
+    .pill, .badge {{ display: inline-block; font-size: 0.7rem; font-weight: 600;
+                     letter-spacing: 0.02em; padding: 0.05rem 0.45rem;
+                     border-radius: 999px; white-space: nowrap;
+                     vertical-align: middle; }}
+    .pill-ps315 {{ background: #e9f0fa; color: #24547f; border: 1px solid #cbdcf2; }}
+    .pill-ner {{ background: #eeeffd; color: #443c9c; border: 1px solid #d5d7f6; }}
+    .badge-redacted {{ background: #eaf6ee; color: #14663a; border: 1px solid #c7e6d2; }}
+    .badge-removed {{ background: #fdecec; color: #9b2226; border: 1px solid #f5cccc; }}
+    .muted {{ color: var(--muted); }}
+    .diff {{ white-space: pre-wrap; background: #fbfcfd; border: 1px solid var(--line);
+             border-radius: 8px; padding: 0.8rem 1rem; max-width: 80ch;
+             font-size: 0.92rem; }}
+    .diff-removed {{ background: #fffafa; border-color: #f2d5d5; }}
+    del {{ background: #ffdcdc; color: #8a1c22; }}
+    ins {{ background: #d6f5e0; color: #14663a; text-decoration: none; }}
+    details {{ margin-top: 1rem; background: #fbfcfd; border: 1px solid var(--line);
+               border-radius: 8px; padding: 0.6rem 0.8rem; }}
+    summary {{ cursor: pointer; font-weight: 600; color: var(--accent); }}
+    details p {{ color: var(--muted); font-size: 0.85rem; }}
+    footer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--line);
+              font-size: 0.8rem; color: var(--muted); }}
+    @media print {{
+      body {{ background: #fff; padding: 0; }}
+      main {{ border: none; box-shadow: none; max-width: none; padding: 0; }}
+      thead th {{ position: static; }}
+    }}
   </style>
 </head>
 <body>
-  <h1>De-identification report</h1>
-  <p class="summary">{summary}</p>
-{findings}
+  <main>
+    <h1>De-identification report</h1>
+    <p class="subtitle">What phi-finder removed from this session</p>
+    <div class="stats">
+{summary}
+    </div>
 {table_section}
 {diff_section}
-  <footer>{footer}</footer>
+    <footer>{footer}</footer>
+  </main>
 </body>
 </html>
 """
