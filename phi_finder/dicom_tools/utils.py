@@ -161,8 +161,10 @@ def deidentify_dicom_files(data_row: DataRow,
     )
 
     # Accumulated across every scan/slice in the session to build one report.
+    # The diffs are keyed so the same field, redacted the same way in every
+    # slice, is held once rather than once per image.
     report_headers = []
-    note_diffs = []
+    value_diffs: dict[tuple, dict] = {}
     n_images = 0
 
     entries = list(data_row.entries_dict.items())
@@ -208,9 +210,9 @@ def deidentify_dicom_files(data_row: DataRow,
                 dcm = pydicom.dcmread(dicom)
                 if dry_run:
                     continue
-                # Snapshot the long free-text fields before anonymise_image
-                # mutates the dataset in place, so we can diff them afterwards.
-                note_snapshot = html_report.snapshot_long_text(dcm)
+                # Snapshot the header values before anonymise_image mutates
+                # the dataset in place, so we can diff them afterwards.
+                value_snapshot = html_report.snapshot_values(dcm)
                 anonymised_dcm = anonymise_dicom.anonymise_image(
                     dcm,
                     analyser=analyser,
@@ -222,7 +224,8 @@ def deidentify_dicom_files(data_row: DataRow,
                     spacy_model_name=spacy_model_name,
                 )
                 report_headers.extend(html_report.read_flagged_headers(anonymised_dcm))
-                note_diffs.extend(html_report.collect_note_diffs(note_snapshot, anonymised_dcm))
+                for diff in html_report.collect_value_diffs(value_snapshot, anonymised_dcm):
+                    value_diffs.setdefault(html_report.diff_key(diff), diff)
                 n_images += 1
                 if destroy_pixels:
                     anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
@@ -264,7 +267,7 @@ def deidentify_dicom_files(data_row: DataRow,
         report_html = html_report.build_html_report(
             report_headers, n_images,
             session_id=data_row.id, use_case=use_case,
-            note_diffs=note_diffs,
+            value_diffs=list(value_diffs.values()),
         )
         html_report.save_html_report(data_row, report_html)
         _log_session(data_row, "debug-dump7", "De-identification report uploaded.")

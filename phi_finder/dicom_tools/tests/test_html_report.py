@@ -26,43 +26,90 @@ def test_render_text_diff_escapes_and_preserves_whitespace():
     assert "<del>Mr X</del>" in html
 
 
-def test_snapshot_and_collect_note_diffs():
+def test_snapshot_and_collect_value_diffs():
     ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
     note = (
         "CT BRAIN - CLINICAL DATA. Patient John Smith, 82 year old male. "
         "Headache since insertion six months ago."
     )
     ds.add_new(0x001021B0, "LT", note)  # Additional Patient History (long)
-    ds.add_new(0x00080030, "TM", "120000")  # non-text VR, ignored
 
-    snapshot = html_report.snapshot_long_text(ds)
+    snapshot = html_report.snapshot_values(ds)
     # Simulate the in-place redaction anonymise_image performs.
     ds[0x001021B0].value = (
         "CT BRAIN - CLINICAL DATA. Patient XXXX, XXXX. "
         "Headache since insertion six months ago."
     )
-    diffs = html_report.collect_note_diffs(snapshot, ds)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
 
     assert len(diffs) == 1
     assert diffs[0]["name"] == "Additional Patient History"
     assert diffs[0]["original"] == note
     assert "John Smith" not in diffs[0]["redacted"]
+    assert diffs[0]["note"] is True  # long enough to be shown as a note diff
 
 
-def test_collect_note_diffs_ignores_short_and_unchanged_fields():
+def test_collect_value_diffs_reports_short_and_non_text_values():
+    # Every changed value is reported, whatever its VR or length -- only long
+    # ones are flagged as notes, so the report can tabulate the rest.
     ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
-    ds.add_new(0x00081030, "LO", "Short desc")  # below the length threshold
+    ds.add_new(0x00081030, "LO", "Head CT for John Smith")  # short text
+    ds.add_new(0x00080030, "TM", "120000")  # non-text VR
+
+    snapshot = html_report.snapshot_values(ds)
+    ds[0x00081030].value = "Head CT for XXXX"
+    ds[0x00080030].value = "000000"
+    diffs = {d["name"]: d for d in html_report.collect_value_diffs(snapshot, ds)}
+
+    assert set(diffs) == {"Study Description", "Study Time"}
+    assert diffs["Study Description"]["original"] == "Head CT for John Smith"
+    assert diffs["Study Description"]["note"] is False
+    assert diffs["Study Time"]["redacted"] == "000000"
+    assert diffs["Study Time"]["note"] is False
+
+
+def test_collect_value_diffs_ignores_unchanged_fields():
+    ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
     long_note = "X" * (html_report._CLINICAL_NOTE_MIN_LENGTH + 5)
     ds.add_new(0x001021B0, "LT", long_note)  # long but will be left unchanged
 
-    snapshot = html_report.snapshot_long_text(ds)
-    ds[0x00081030].value = "XXXX"  # changed but too short to be a note
-    diffs = html_report.collect_note_diffs(snapshot, ds)
+    snapshot = html_report.snapshot_values(ds)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
 
     assert diffs == []
 
 
-def test_collect_note_diffs_reaches_into_sequences():
+def test_collect_value_diffs_ignores_pixel_and_bulk_data():
+    # Pixel data and long numeric arrays are not values a reader could read as
+    # PHI, and dumping them would swamp the report, so they are never diffed.
+    ds = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    ds.add_new(0x00283006, "US", list(range(html_report._MAX_MULTIVALUE_ITEMS + 1)))
+
+    snapshot = html_report.snapshot_values(ds)
+    ds.PixelData = b"\x00" * 128
+    ds[0x00283006].value = [0] * (html_report._MAX_MULTIVALUE_ITEMS + 1)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
+
+    assert diffs == []
+
+
+def test_collect_value_diffs_distinguishes_emptied_from_removed():
+    # The PS3.15 "Z" action blanks a value in place; "X" deletes the field.
+    ds = pydicom.Dataset()
+    ds.add_new(0x00081030, "LO", "Head CT")
+    ds.add_new(0x00081080, "LO", "Cardiology")  # Admitting Diagnoses Description
+
+    snapshot = html_report.snapshot_values(ds)
+    ds[0x00081030].value = ""
+    del ds[0x00081080]
+    diffs = {d["name"]: d for d in html_report.collect_value_diffs(snapshot, ds)}
+
+    assert diffs["Study Description"]["removed"] is False
+    assert diffs["Study Description"]["redacted"] == ""
+    assert diffs["Admitting Diagnoses Description"]["removed"] is True
+
+
+def test_collect_value_diffs_reaches_into_sequences():
     # Notes nested inside a sequence item are diffed too.
     ds = pydicom.Dataset()
     item = pydicom.Dataset()
@@ -70,15 +117,15 @@ def test_collect_note_diffs_reaches_into_sequences():
     item.add_new(0x001021B0, "LT", note)
     ds.add_new(0x00081115, "SQ", pydicom.Sequence([item]))  # Referenced Series Sequence
 
-    snapshot = html_report.snapshot_long_text(ds)
+    snapshot = html_report.snapshot_values(ds)
     ds[0x00081115].value[0][0x001021B0].value = "XXXX"
-    diffs = html_report.collect_note_diffs(snapshot, ds)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
 
     assert len(diffs) == 1
     assert diffs[0]["original"] == note
 
 
-def test_collect_note_diffs_labels_nested_location():
+def test_collect_value_diffs_labels_nested_location():
     # A nested note is reported with its full path, not just its element name.
     ds = pydicom.Dataset()
     item = pydicom.Dataset()
@@ -86,9 +133,9 @@ def test_collect_note_diffs_labels_nested_location():
     item.add_new(0x001021B0, "LT", note)
     ds.add_new(0x00081115, "SQ", pydicom.Sequence([item]))
 
-    snapshot = html_report.snapshot_long_text(ds)
+    snapshot = html_report.snapshot_values(ds)
     ds[0x00081115].value[0][0x001021B0].value = "XXXX"
-    diffs = html_report.collect_note_diffs(snapshot, ds)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
 
     assert diffs[0]["location"] == (
         "Referenced Series Sequence [0] > Additional Patient History"
@@ -96,7 +143,7 @@ def test_collect_note_diffs_labels_nested_location():
     assert diffs[0]["removed"] is False
 
 
-def test_collect_note_diffs_flags_removed_element():
+def test_collect_value_diffs_flags_removed_element():
     # A note that vanished with its enclosing sequence is flagged as removed,
     # not reported as an in-place redaction that happened to blank everything.
     ds = pydicom.Dataset()
@@ -105,16 +152,16 @@ def test_collect_note_diffs_flags_removed_element():
     item.add_new(0x001021B0, "LT", note)
     ds.add_new(0x00081115, "SQ", pydicom.Sequence([item]))
 
-    snapshot = html_report.snapshot_long_text(ds)
+    snapshot = html_report.snapshot_values(ds)
     ds[0x00081115].value = pydicom.Sequence([])  # the PS3.15 "D" action
-    diffs = html_report.collect_note_diffs(snapshot, ds)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
 
     assert len(diffs) == 1
     assert diffs[0]["removed"] is True
     assert diffs[0]["redacted"] == ""
 
 
-def test_collect_note_diffs_separates_duplicate_note_copies():
+def test_collect_value_diffs_separates_duplicate_note_copies():
     # Regression: an SR carrying the same text at the root and inside Content
     # Sequence must report both copies separately -- the nested one removed
     # with the sequence, the root one redacted in place.
@@ -127,10 +174,10 @@ def test_collect_note_diffs_separates_duplicate_note_copies():
     ds.add_new(0x0040A160, "UT", note)
     ds.add_new(0x0040A730, "SQ", pydicom.Sequence([outer]))
 
-    snapshot = html_report.snapshot_long_text(ds)
+    snapshot = html_report.snapshot_values(ds)
     ds[0x0040A730].value = pydicom.Sequence([])  # profile empties the sequence
     ds[0x0040A160].value = "CT BRAIN. Patient XXXX, XXXX, presented today."
-    diffs = html_report.collect_note_diffs(snapshot, ds)
+    diffs = html_report.collect_value_diffs(snapshot, ds)
 
     by_location = {d["location"]: d for d in diffs}
     assert set(by_location) == {
@@ -160,7 +207,7 @@ def test_build_html_report_marks_removed_and_redacted_distinctly():
             "removed": True,
         },
     ]
-    html = html_report.build_html_report([], n_images=1, note_diffs=diffs)
+    html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
 
     # Both copies are shown, told apart by location rather than by name alone.
     assert "Content Sequence [4] &gt; Text Value" in html
@@ -183,7 +230,7 @@ def test_build_html_report_dedupes_per_location_not_per_name():
         {**base, "location": "Content Sequence [4] > Text Value"},
         {**base, "location": "Content Sequence [4] > Text Value"},  # true duplicate
     ]
-    html = html_report.build_html_report([], n_images=1, note_diffs=diffs)
+    html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
     assert html.count("<h3>") == 2
 
 
@@ -196,7 +243,7 @@ def test_build_html_report_includes_note_diff():
         }
     ]
     html = html_report.build_html_report(
-        [], n_images=3, session_id="S1", use_case="Standard", note_diffs=diffs
+        [], n_images=3, session_id="S1", use_case="Standard", value_diffs=diffs
     )
     assert "Clinical notes" in html
     assert "Additional Patient History" in html
@@ -210,16 +257,114 @@ def test_build_html_report_dedupes_identical_note_diffs():
         "original": "Patient John Smith presented with a headache today.",
         "redacted": "Patient XXXX presented with a headache today.",
     }
-    html = html_report.build_html_report([], n_images=2, note_diffs=[diff, dict(diff)])
+    html = html_report.build_html_report([], n_images=2, value_diffs=[diff, dict(diff)])
     # The same note repeated across slices appears only once.
     assert html.count("Additional Patient History") == 1
 
 
 def test_build_html_report_omits_diff_section_without_notes():
-    html = html_report.build_html_report([], n_images=1, note_diffs=None)
+    html = html_report.build_html_report([], n_images=1, value_diffs=None)
     assert "Clinical notes" not in html
+    assert "Changed field values" not in html
     assert "<del>" not in html
     assert 'class="diff"' not in html
+
+
+def test_build_html_report_tabulates_short_value_changes():
+    # Short values get a before/after row rather than a word-level diff, so
+    # every changed field is visible, not just the clinical notes.
+    diffs = [
+        {"name": "Patient's Name", "location": "Patient's Name",
+         "original": "Smith^John", "redacted": "XXXX",
+         "removed": False, "note": False},
+        {"name": "Patient's Birth Date", "location": "Patient's Birth Date",
+         "original": "19430607", "redacted": "19430101",
+         "removed": False, "note": False},
+    ]
+    html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
+
+    assert "Changed field values" in html
+    assert "<th>Original value</th>" in html
+    assert '<td class="before">Smith^John</td><td class="after">XXXX</td>' in html
+    assert '<td class="before">19430607</td><td class="after">19430101</td>' in html
+    # Tabulated values are not also rendered as clinical notes.
+    assert "Clinical notes" not in html
+
+
+def test_build_html_report_table_marks_emptied_and_removed():
+    diffs = [
+        {"name": "Study Description", "location": "Study Description",
+         "original": "Head CT", "redacted": "", "removed": False, "note": False},
+        {"name": "Institution Name", "location": "Institution Name",
+         "original": "St Elsewhere", "redacted": "", "removed": True,
+         "note": False},
+    ]
+    html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
+
+    assert '<td class="after"><em>(emptied)</em></td>' in html
+    assert '<td class="after"><em>(field removed)</em></td>' in html
+
+
+def test_build_html_report_caps_values_per_field_and_says_so():
+    # A field that differs in every slice (e.g. a UID) must not fill the
+    # report, and what was left out has to be stated, not silently dropped.
+    n = html_report._MAX_VALUES_PER_FIELD + 3
+    diffs = [
+        {"name": "SOP Instance UID", "location": "SOP Instance UID",
+         "original": f"1.2.3.{i}", "redacted": f"9.9.9.{i}",
+         "removed": False, "note": False}
+        for i in range(n)
+    ]
+    html = html_report.build_html_report([], n_images=n, value_diffs=diffs)
+
+    assert html.count('<td class="before">') == html_report._MAX_VALUES_PER_FIELD
+    assert "and 3 further distinct value(s)" in html
+    assert "1.2.3.0" in html and "1.2.3.7" not in html
+
+
+def test_build_html_report_folds_private_fields_away():
+    # A scanner writes hundreds of private fields; they go in a collapsed block
+    # so the standard fields stay readable, but they are still all there.
+    diffs = [
+        {"name": "Patient ID", "location": "Patient ID", "original": "MRN1",
+         "redacted": "XXXX", "removed": False, "note": False, "private": False},
+        {"name": "[Angle of first view]", "location": "[Angle of first view]",
+         "original": "-718.07", "redacted": "", "removed": True,
+         "note": False, "private": True},
+    ]
+    html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
+
+    main, _, private = html.partition("<details>")
+    assert "MRN1" in main and "MRN1" not in private
+    assert "-718.07" in private and "-718.07" not in main
+    assert "1 private (manufacturer-defined) field(s)" in private
+
+
+def test_collect_value_diffs_marks_private_tags():
+    ds = pydicom.Dataset()
+    ds.add_new(0x00081030, "LO", "Head CT")
+    block = ds.private_block(0x0009, "ACME 1.0", create=True)
+    block.add_new(0x01, "LO", "scanner note")
+
+    snapshot = html_report.snapshot_values(ds)
+    ds[0x00081030].value = "XXXX"
+    ds[0x00091001].value = "XXXX"
+    diffs = {d["name"]: d for d in html_report.collect_value_diffs(snapshot, ds)}
+
+    assert diffs["Study Description"]["private"] is False
+    # The private creator itself is never reported, only the block's data.
+    assert [d["private"] for n, d in diffs.items() if n != "Study Description"] == [True]
+
+
+def test_build_html_report_escapes_table_values():
+    diffs = [
+        {"name": "Patient Comments", "location": "Patient Comments",
+         "original": "<script>alert(1)</script>", "redacted": "XXXX",
+         "removed": False, "note": False},
+    ]
+    html = html_report.build_html_report([], n_images=1, value_diffs=diffs)
+    assert "&lt;script&gt;" in html
+    assert "<script>" not in html
 
 
 def test_build_html_report_lists_and_dedupes_header_names():
