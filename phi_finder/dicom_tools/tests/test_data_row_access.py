@@ -22,7 +22,7 @@ def test_secondary_capture_resource_is_deidentified(
     utils.deidentify_dicom_files(
         data_row_with_secondary,
         score_threshold=0.5,
-        spacy_model_name="en_core_web_md",
+        spacy_model_name="en_core_web_sm",
         destroy_pixels=True,
         use_transformers=False,
         dry_run=False,
@@ -55,7 +55,7 @@ def test_ingest_anonymised_dicom(data_row: DataRow):
     assert n_scans_before == 6
     utils.deidentify_dicom_files(data_row,
                                  score_threshold=0.5,
-                                 spacy_model_name="en_core_web_md",
+                                 spacy_model_name="en_core_web_sm",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=False)
@@ -72,7 +72,7 @@ def test_ingest_anonymised_dicom(data_row: DataRow):
     # Running again to ensure it does not duplicate entries.
     utils.deidentify_dicom_files(data_row,
                                  score_threshold=0.5,
-                                 spacy_model_name="en_core_web_md",
+                                 spacy_model_name="en_core_web_sm",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=False)
@@ -86,7 +86,7 @@ def test_dry_run(data_row: DataRow):
     assert n_scans_before == 6
     utils.deidentify_dicom_files(data_row,
                                  score_threshold=0.5,
-                                 spacy_model_name="en_core_web_md",
+                                 spacy_model_name="en_core_web_sm",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=True)
@@ -118,7 +118,7 @@ def test_pipeline_generates_report(data_row: DataRow):
     """deidentify_dicom_files uploads one session report, and re-runs re-use it."""
     utils.deidentify_dicom_files(data_row,
                                  score_threshold=0.5,
-                                 spacy_model_name="en_core_web_md",
+                                 spacy_model_name="en_core_web_sm",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=False)
@@ -141,7 +141,7 @@ def test_pipeline_generates_report(data_row: DataRow):
     # Re-running the pipeline re-uses the report entry rather than duplicating it.
     utils.deidentify_dicom_files(data_row,
                                  score_threshold=0.5,
-                                 spacy_model_name="en_core_web_md",
+                                 spacy_model_name="en_core_web_sm",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=False)
@@ -152,7 +152,7 @@ def test_dry_run_generates_no_report(data_row: DataRow):
     """A dry-run anonymises nothing, so no report entry is created."""
     utils.deidentify_dicom_files(data_row,
                                  score_threshold=0.5,
-                                 spacy_model_name="en_core_web_md",
+                                 spacy_model_name="en_core_web_sm",
                                  destroy_pixels=True,
                                  use_transformers=False,
                                  dry_run=True)
