@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from datetime import datetime
 
 import numpy as np
@@ -406,11 +407,41 @@ _STRUCTURAL_TAGS = frozenset({
     Tag(0x0028, 0x0004),  # Photometric Interpretation
 })
 
-# Standard headers that PS3.15 Table E.1-1 gives no action to, 
+# Standard headers that PS3.15 Table E.1-1 gives no action to,
 # but they can hold long texts, so the NER models scan them.
 _NER_SCANNED_TAGS = frozenset({
     Tag(0x0040, 0xA160),  # Text Value (SR Document Content)
 })
+
+# Binary VRs whose bytes routinely hold text when the element is private, so
+# private elements carrying them are scanned rather than skipped:
+#   UN  what a private attribute of an Implicit VR Little Endian file is read
+#       back as whenever its creator is not one pydicom's private dictionary
+#       covers -- the file states no VR and there is nothing to look it up in,
+#       so the whole block would otherwise go unscanned.
+#   OB  vendor blocks such as the Siemens CSA header, which mix framing bytes
+#       with plain strings.
+# Standard attributes are deliberately not included: OB/UN there is bulk data
+# (pixels, overlays, lookup tables) that rewriting would corrupt.
+_PRIVATE_BINARY_TEXT_VRS = frozenset({"UN", "OB"})
+
+# Above this size a private binary value is treated as an opaque blob rather
+# than as text: a value that cannot be shown to be PHI-free is emptied, which
+# is what the Basic Profile does to private attributes anyway.
+_MAX_PRIVATE_BINARY_SCAN_BYTES = 1 << 20  # 1 MiB
+
+# Runs of printable ASCII (plus the usual whitespace) are the only part of a
+# binary value that can be text. The framing bytes around them must never
+# reach the NER pipeline: they are not PHI, and the recognisers' regexes
+# backtrack catastrophically over long non-text byte runs -- a 2 KiB blob
+# takes ~40s to analyse whole, against milliseconds for the strings in it.
+_PRINTABLE_RUN_RE = re.compile(rb"[ -~\t\r\n]+")
+
+# Shortest embedded string run in a binary blob still worth scanning. Below
+# this, runs are file magic and framing rather than anything a human wrote.
+# It does not apply to a value that is printable end to end -- see
+# _redact_private_binary.
+_MIN_BINARY_TEXT_RUN = 6
 
 
 def _contains_ner_scanned_tag(ds: dicom.dataset.Dataset) -> bool:
@@ -424,6 +455,99 @@ def _contains_ner_scanned_tag(ds: dicom.dataset.Dataset) -> bool:
                 if isinstance(sub_ds, dicom.dataset.Dataset) and _contains_ner_scanned_tag(sub_ds):
                     return True
     return False
+
+
+def _redact_text(text: str,
+                 analyser: AnalyzerEngine,
+                 anonymizer: AnonymizerEngine,
+                 score_threshold: float,
+                 gliner_pii=None) -> str:
+    analyzer_results = analyser.analyze(text=text, language="en", score_threshold=score_threshold)
+    redacted = anonymizer.anonymize(
+        text=text,
+        analyzer_results=analyzer_results,
+        operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
+    ).text
+    if gliner_pii and len(redacted) > 30:
+        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
+    return redacted
+
+
+def _redact_private_binary(value: bytes,
+                           analyser: AnalyzerEngine,
+                           anonymizer: AnonymizerEngine,
+                           score_threshold: float,
+                           gliner_pii=None) -> bytes:
+    """Scans the text embedded in a private UN/OB element and returns it redacted.
+
+    Only the printable runs are scanned, each through the same pipeline as any
+    text header. A value that is printable end to end is one string that
+    happened to be typed as UN or OB -- how a private element of an Implicit
+    VR file arrives when its creator is outside pydicom's private dictionary
+    -- so it is scanned whole, however short; in a real binary blob only runs
+    of at least ``_MIN_BINARY_TEXT_RUN`` characters are taken as text.
+
+    Each redacted run is written back over the bytes it came from, padded or
+    truncated to the run's original length, so the value's length and byte
+    layout are preserved: private binary formats are length-prefixed and
+    offset-addressed, and shifting their bytes would corrupt them. Bytes
+    outside a scanned run are never touched.
+
+    Parameters
+    ----------
+    value : bytes
+        The element's raw value.
+
+    analyser : AnalyzerEngine
+        Presidio analyser engine carrying the custom recognisers.
+
+    anonymizer : AnonymizerEngine
+        Presidio anonymizer engine, used to replace the recognised spans.
+
+    score_threshold : float
+        Entities scoring below this are not redacted.
+
+    gliner_pii : UniEncoderSpanGLiNER, optional
+        If set, GLiNER runs on top of Presidio's output for long values.
+
+    Returns
+    -------
+    bytes
+        The redacted value, the same length as ``value``.
+
+    Raises
+    ------
+    ValueError
+        If the value is larger than ``_MAX_PRIVATE_BINARY_SCAN_BYTES``, so the
+        caller can fail closed rather than let an unscanned value through.
+    """
+    if len(value) > _MAX_PRIVATE_BINARY_SCAN_BYTES:
+        raise ValueError(
+            f"private binary value of {len(value)} bytes is too large to scan "
+            f"(limit {_MAX_PRIVATE_BINARY_SCAN_BYTES})"
+        )
+    runs = [match.span() for match in _PRINTABLE_RUN_RE.finditer(value)]
+    if runs != [(0, len(value))]:
+        runs = [(start, end) for start, end in runs if end - start >= _MIN_BINARY_TEXT_RUN]
+    redacted_value = bytearray(value)
+    # A vendor blob repeats the same strings over and over (a CSA header holds
+    # thousands of runs but few distinct ones), and the pipeline is
+    # deterministic, so each distinct run is only ever analysed once.
+    seen: dict[bytes, bytes] = {}
+    for start, end in runs:
+        run = value[start:end]
+        redacted = seen.get(run)
+        if redacted is None:
+            redacted = _redact_text(
+                run.decode("ascii"), analyser, anonymizer, score_threshold, gliner_pii,
+            ).encode("ascii", errors="replace")
+            seen[run] = redacted
+        if redacted == run:
+            continue
+        # Padding is only ever added, and truncation only ever drops the tail
+        # of an already-redacted string, so neither can reinstate PHI.
+        redacted_value[start:end] = redacted[:end - start].ljust(end - start, b" ")
+    return bytes(redacted_value)
 
 
 def _anonymise_ds(ds: dicom.dataset.Dataset,
@@ -441,7 +565,13 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
     remaining standard attributes are left untouched (the caller has already
     de-identified them, e.g. via the PS3.15 Basic Profile).
 
-    Private creator elements are never scrubbed: 
+    Text-valued elements are scanned by the NER pipeline. Private elements
+    carrying text under a binary VR (``_PRIVATE_BINARY_TEXT_VRS``) are scanned
+    too, which is what keeps a private block whose VRs pydicom could not
+    resolve -- an Implicit VR file with a creator outside its private
+    dictionary -- from going through unscanned.
+
+    Private creator elements are never scrubbed:
     the creator string identifies the block's owner; redacting it'd corrupt the creator-to-data mapping of every element in the block.
     """
     if anonymised_headers is None:
@@ -509,17 +639,10 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 if not is_multi and original == "":
                     continue
                 values = [str(v) for v in original] if is_multi else [str(original)]
-                new_values = []
-                for v in values:
-                    analyzer_results = analyser.analyze(text=v, language="en", score_threshold=score_threshold)
-                    redacted = anonymizer.anonymize(
-                        text=v,
-                        analyzer_results=analyzer_results,
-                        operators={"DEFAULT": OperatorConfig("replace", {"new_value": "XXXX"})},
-                    ).text
-                    if gliner_pii and len(redacted) > 30:
-                        redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
-                    new_values.append(redacted)
+                new_values = [
+                    _redact_text(v, analyser, anonymizer, score_threshold, gliner_pii)
+                    for v in values
+                ]
                 if new_values != values:
                     anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
                 if is_multi:
@@ -534,6 +657,33 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                 )
                 try:
                     ds[elem.tag].value = ""
+                except Exception:
+                    del ds[elem.tag]
+                anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
+        elif elem.tag.is_private and elem.VR in _PRIVATE_BINARY_TEXT_VRS:
+            # Private text hiding under a binary VR -- see
+            # _PRIVATE_BINARY_TEXT_VRS. Skipping these lets a whole private
+            # block through unscanned whenever its VRs could not be resolved.
+            try:
+                original = elem.value
+                if original is None or len(original) == 0:
+                    continue
+                original = bytes(original)
+                redacted = _redact_private_binary(
+                    original, analyser, anonymizer, score_threshold, gliner_pii,
+                )
+                if redacted != original:
+                    ds[elem.tag].value = redacted
+                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
+            except Exception as e:
+                # Same fail-closed rule as for text: a value that could not be
+                # scanned may contain PHI, so it does not survive.
+                logger.error(
+                    "Failed to redact private binary %s (%s), emptying it. %s: %s",
+                    elem.tag, elem.name, type(e).__name__, e,
+                )
+                try:
+                    ds[elem.tag].value = b""
                 except Exception:
                     del ds[elem.tag]
                 anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})

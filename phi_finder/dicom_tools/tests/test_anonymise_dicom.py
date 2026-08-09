@@ -1,5 +1,6 @@
 import pytest
 import pydicom
+import io
 import json
 import warnings
 from pydicom.data import get_testdata_files
@@ -433,6 +434,113 @@ def test_anonymise_image_scan_private_keeps_and_scrubs_private():
     pblock.add_new(0x01, "LO", "Jane Smith")
     plain_anon = anonymise_dicom.anonymise_image(plain, use_case="dicom_default", spacy_model_name="en_core_web_sm")
     assert pblock.get_tag(0x01) not in plain_anon
+
+
+@pytest.mark.parametrize("vr", ["UN", "OB"])
+def test_scan_private_scrubs_text_under_a_binary_vr(vr):
+    # Private text does not only arrive under a text VR: vendor blocks are OB,
+    # and anything pydicom cannot resolve a VR for is UN. Skipping those VRs
+    # would let the whole private block through with its PHI intact.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    block = dataset.private_block(0x000B, "ACME LAB", create=True)
+    block.add_new(0x01, vr, b"Patient Jane Smith MRN 1234567")
+    priv_tag = block.get_tag(0x01)
+
+    anonymised = anonymise_dicom.anonymise_image(
+        dataset, use_case="dicom_default_scan_private", spacy_model_name="en_core_web_sm"
+    )
+
+    value = anonymised[priv_tag].value
+    assert b"Jane Smith" not in value
+    assert b"1234567" not in value
+    assert b"XXXX" in value
+    # The value keeps its length, so a length-prefixed vendor format survives.
+    assert len(value) == len(b"Patient Jane Smith MRN 1234567")
+    # And the change is recorded in the audit block like any other header.
+    flagged = json.loads(anonymised[0x0209, 0x1000].value)
+    assert any(header["tag"] == str(priv_tag) for header in flagged)
+
+
+def test_scan_private_scrubs_implicit_vr_private_block():
+    # An Implicit VR file states no VR, so a private element whose creator is
+    # not in pydicom's private dictionary is read back as UN. This is the
+    # common real-world shape of the case above.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    block = dataset.private_block(0x000B, "ACME LAB", create=True)
+    block.add_new(0x01, "LO", "Jane Smith")
+    priv_tag = block.get_tag(0x01)
+    dataset.file_meta.TransferSyntaxUID = pydicom.uid.ImplicitVRLittleEndian
+    dataset.is_implicit_VR = True
+    buffer = io.BytesIO()
+    dataset.save_as(buffer, write_like_original=False)
+    buffer.seek(0)
+    reread = pydicom.dcmread(buffer)
+    assert reread[priv_tag].VR == "UN"  # the VR was lost in the round trip
+
+    anonymised = anonymise_dicom.anonymise_image(
+        reread, use_case="dicom_default_scan_private", spacy_model_name="en_core_web_sm"
+    )
+
+    assert b"Jane Smith" not in anonymised[priv_tag].value
+    assert b"XXXX" in anonymised[priv_tag].value
+
+
+def test_scan_private_leaves_non_text_binary_alone():
+    # Only the printable runs of a private blob are text. The framing bytes
+    # around them must come back untouched, or a vendor format that is parsed
+    # by offset is corrupted -- and they must not reach the NER pipeline at
+    # all, whose regexes backtrack catastrophically over non-text bytes.
+    framing = bytes(range(32)) + b"\xff\xfe\xc8"
+    blob = b"CT01\x00\x00\x00Dr Jane Doe MRN 1234567\x00" + framing
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    block = dataset.private_block(0x000B, "ACME LAB", create=True)
+    block.add_new(0x01, "OB", blob)
+    priv_tag = block.get_tag(0x01)
+
+    anonymised = anonymise_dicom.anonymise_image(
+        dataset, use_case="dicom_default_scan_private", spacy_model_name="en_core_web_sm"
+    )
+
+    value = anonymised[priv_tag].value
+    assert b"Jane Doe" not in value
+    assert b"1234567" not in value
+    assert len(value) == len(blob)
+    assert value.startswith(b"CT01\x00\x00\x00")  # magic intact
+    assert value.endswith(framing)  # trailing framing intact
+
+
+def test_oversized_private_binary_fails_closed():
+    # A value too large to scan cannot be shown to be PHI-free, so it is
+    # emptied rather than passed through -- the same fail-closed rule the text
+    # path follows.
+    oversized = b"Jane Smith " * (anonymise_dicom._MAX_PRIVATE_BINARY_SCAN_BYTES // 10)
+    assert len(oversized) > anonymise_dicom._MAX_PRIVATE_BINARY_SCAN_BYTES
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    block = dataset.private_block(0x000B, "ACME LAB", create=True)
+    block.add_new(0x01, "OB", oversized)
+    priv_tag = block.get_tag(0x01)
+
+    anonymised = anonymise_dicom.anonymise_image(
+        dataset, use_case="dicom_default_scan_private", spacy_model_name="en_core_web_sm"
+    )
+
+    assert anonymised[priv_tag].value == b""
+
+
+def test_standard_use_case_also_scrubs_private_binary():
+    # The NER-only use cases walk the same code path, so they gain the same
+    # coverage rather than keeping the old blind spot.
+    dataset = pydicom.dcmread(get_testdata_files("CT_small.dcm")[0])
+    block = dataset.private_block(0x000B, "ACME LAB", create=True)
+    block.add_new(0x01, "UN", b"Patient Jane Smith MRN 1234567")
+    priv_tag = block.get_tag(0x01)
+
+    anonymised = anonymise_dicom.anonymise_image(
+        dataset, use_case="Standard", spacy_model_name="en_core_web_sm"
+    )
+
+    assert b"Jane Smith" not in anonymised[priv_tag].value
+    assert b"XXXX" in anonymised[priv_tag].value
 
 
 SR_REPORT_TEXT = (
