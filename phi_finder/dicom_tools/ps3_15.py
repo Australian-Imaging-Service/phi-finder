@@ -27,6 +27,11 @@ from pydicom.uid import generate_uid
 
 logger = logging.getLogger(__name__)
 
+# Provenance stamped on each flagged-header record, so the de-identification
+# report can separate what the profile's fixed action map handled from what the
+# NER models found by reading values (see anonymise_dicom.SOURCE_NER).
+SOURCE_PS3_15 = "ps3.15"
+
 BASIC_PROFILE_ACTIONS: dict[int, str] = {
     0x00001000: "X",  # Affected SOP Instance UID
     0x00001001: "U",  # Requested SOP Instance UID
@@ -908,7 +913,7 @@ def _apply(ds: dicom.dataset.Dataset, anonymised_headers: list,
                     if isinstance(item, dicom.dataset.Dataset):
                         _apply(item, anonymised_headers, retain_patient_characteristics, scan_private)
             continue
-        record = {"tag": str(elem.tag), "name": elem.name}
+        record = {"tag": str(elem.tag), "name": elem.name, "source": SOURCE_PS3_15}
         resolved = _resolve_action(action)
         try:
             if resolved == "X":

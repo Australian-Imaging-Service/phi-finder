@@ -7,3 +7,5 @@ extras*/
 *ipynb
 eval
 *html
+aggregate_reports/[0-9]
+aggregate_reports/*.ipynb

@@ -22,6 +22,11 @@ from phi_finder.dicom_tools import ps3_15
 logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
+# Provenance stamped on each flagged-header record, so the de-identification
+# report can separate headers whose value was read and scrubbed by the NER
+# models from those the PS3.15 action map handled (see ps3_15.SOURCE_PS3_15).
+SOURCE_NER = "ner"
+
 
 def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
     """It sets all pixel values to 0.
@@ -63,7 +68,7 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
 
 
 def _build_presidio_analyser(score_threshold: float=0.5,
-                             spacy_model_name: str="en_core_web_md") -> AnalyzerEngine:
+                             spacy_model_name: str="en_core_web_lg") -> AnalyzerEngine:
     """Builds and configures a Presidio analyser engine for named entity recognition.
 
     Parameters
@@ -72,7 +77,7 @@ def _build_presidio_analyser(score_threshold: float=0.5,
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation. Default is 0.5.
     spacy_model_name : str, optional
-        The name of the SpaCy model to use for NLP processing. Default is "en_core_web_md".
+        The name of the SpaCy model to use for NLP processing. Default is "en_core_web_lg".
         Other options include "en_core_web_sm" and "en_core_web_lg".
         
     Returns
@@ -319,12 +324,12 @@ def _build_presidio_analyser(score_threshold: float=0.5,
 
 def _build_transformer() -> UniEncoderSpanGLiNER:
     model = GLiNER.from_pretrained("nvidia/gliner-pii")#, max_length=384)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cpu')#torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
-    if torch.cuda.is_available():
-        model.compile()
-        torch.set_float32_matmul_precision('high')
+    #if torch.cuda.is_available():
+    #    model.compile()
+    #    torch.set_float32_matmul_precision('high')
     return model
 
 
@@ -333,9 +338,6 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
                                 threshold: float=0.15,
                                 return_entities: bool=False) -> str:
     """Anonymises text using a specified named entity recognition (NER) pipeline.
-
-    This function processes the input text through the provided NER pipeline,
-    replacing recognised entities of type "PER", "LOC", and "ORG" with the placeholder "[XXXX]".
 
     Parameters
     ----------
@@ -360,11 +362,7 @@ def _anonymise_with_transformer(model: UniEncoderSpanGLiNER,
         "age", "profession", "gender", "name",
         "sex", "language", "ethnicity",
         "country", "city", "state", "suburb",
-        "location", "person", "organization",
-        "phone number", "address", "passport number",
-        "email", "social security number", "health insurance id number",
-        "date of birth", "mobile phone number",
-        "health insurance number",
+        "location", "person", "organization"
     ]
     # merged collapses overlapping entity spans into non-overlapping
     # ones so the slice-replacement at the end doesn't
@@ -408,6 +406,25 @@ _STRUCTURAL_TAGS = frozenset({
     Tag(0x0028, 0x0004),  # Photometric Interpretation
 })
 
+# Standard headers that PS3.15 Table E.1-1 gives no action to, 
+# but they can hold long texts, so the NER models scan them.
+_NER_SCANNED_TAGS = frozenset({
+    Tag(0x0040, 0xA160),  # Text Value (SR Document Content)
+})
+
+
+def _contains_ner_scanned_tag(ds: dicom.dataset.Dataset) -> bool:
+    """Checks if the dicom has any of the tags in ``_NER_SCANNED_TAGS``.
+    """
+    for elem in ds:
+        if elem.tag in _NER_SCANNED_TAGS:
+            return True
+        if elem.VR == "SQ":
+            for sub_ds in elem.value:
+                if isinstance(sub_ds, dicom.dataset.Dataset) and _contains_ner_scanned_tag(sub_ds):
+                    return True
+    return False
+
 
 def _anonymise_ds(ds: dicom.dataset.Dataset,
                   analyser: AnalyzerEngine,
@@ -419,10 +436,10 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                   private_only: bool = False) -> None:
     """Recursively anonymises all elements in a DICOM dataset in-place.
 
-    When ``private_only`` is True, only private attributes have their values
-    scanned/redacted; standard attributes are left untouched (the caller has
-    already de-identified them, e.g. via the PS3.15 Basic Profile). Sequences
-    are still recursed into so private attributes nested inside them are reached.
+    When ``private_only`` is True, only private attributes and the free-text
+    attributes in ``_NER_SCANNED_TAGS`` have their values scanned/redacted; the
+    remaining standard attributes are left untouched (the caller has already
+    de-identified them, e.g. via the PS3.15 Basic Profile).
 
     Private creator elements are never scrubbed: 
     the creator string identifies the block's owner; redacting it'd corrupt the creator-to-data mapping of every element in the block.
@@ -444,13 +461,11 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             continue
         if elem.tag.is_private_creator:
             continue  # Private creators ("SIEMENS CSA HEADER") never touched.
-        if private_only and not elem.tag.is_private:
-            # Only scrub private data elements; leave standard attributes
-            # untouched (the caller already handled them).
+        if private_only and not elem.tag.is_private and elem.tag not in _NER_SCANNED_TAGS:
             continue
         if elem.VR == "PN" or elem.tag == (0x0010, 0x0010):
             ds[elem.tag].value = PersonName("XXXX")
-            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
         elif elem.tag == (0x0010, 0x0040):  # Sex unchanged.
             continue
         elif elem.tag == (0x0010, 0x0030):  # Birthdate
@@ -467,12 +482,12 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
             # Fail-safe: if the format is unrecognised, scrub the value so the
             # original birthdate never survives in the dataset.
             ds[elem.tag].value = f"{year:04d}0101" if year is not None else "19000101"
-            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
         elif elem.VR == "AS":
             if str(elem.value).strip() in ("", "000Y"):
                 continue
             ds[elem.tag].value = "000Y"
-            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+            anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
         elif elem.VR in [
             "LO",  # Long String
             "LT",  # Long Text
@@ -506,14 +521,13 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                         redacted = _anonymise_with_transformer(gliner_pii, redacted, threshold=score_threshold, return_entities=False)
                     new_values.append(redacted)
                 if new_values != values:
-                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+                    anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
                 if is_multi:
                     ds[elem.tag].value = dicom.multival.MultiValue(str, new_values)
                 else:
                     ds[elem.tag].value = new_values[0]
             except Exception as e:
-                # Fail closed: a value that could not be analysed may still
-                # contain PHI, so blank it rather than leave the original.
+                # A value that couldn't be analysed may contain PHI, so blank it.
                 logger.error(
                     "Failed to redact %s (%s), blanking it. %s: %s",
                     elem.tag, elem.name, type(e).__name__, e,
@@ -522,7 +536,7 @@ def _anonymise_ds(ds: dicom.dataset.Dataset,
                     ds[elem.tag].value = ""
                 except Exception:
                     del ds[elem.tag]
-                anonymised_headers.append({"tag": str(elem.tag), "name": elem.name})
+                anonymised_headers.append({"tag": str(elem.tag), "name": elem.name, "source": SOURCE_NER})
 
 
 def anonymise_image(ds: dicom.dataset.FileDataset,
@@ -531,7 +545,9 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
                     gliner_pii: UniEncoderSpanGLiNER=None,
-                    use_case: str='Standard') -> dicom.dataset.FileDataset:
+                    use_case: str='Standard',
+                    spacy_model_name: str="en_core_web_lg",
+                    ) -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
 
     Parameters
@@ -555,7 +571,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
     gliner_pii: UniEncoderSpanGLiNER, optional (default False)
         If set, the model will be used for anonymisation on top of Presidio's output.
 
-    use_case : str, optional (default 'Standard')
+    use_case : str, optional (default 'dicom_retain_patient_scan_private')
         * PS3.15 (alias 'dicom_default'): headers are de-identified with the
         DICOM PS3.15 Annex E Basic Application Level Confidentiality Profile;
         Presidio and GLiNER are not used on the headers.
@@ -566,9 +582,10 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
         the matching PS3.15 variant for the standard headers, but private
         attributes are kept and scanned with the Presidio/GLiNER pipeline
         instead of being removed.
-        * Any other value (e.g. 'Standard', 'Aggressive'): headers are scanned with the
-        Presidio NER pipeline (plus GLiNER when gliner_pii is given) and
-        redacted.
+        * Any other value: use Presidio (plus GLiNER when gliner_pii is given).
+
+    spacy_model_name : str, optional (default "en_core_web_lg")
+        Only used when ``analyser`` is not supplied and one has to be built here.
 
     Returns
     -------
@@ -584,11 +601,10 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
 
     ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
     scan_private = ps3_15.scan_private_headers(use_case)
-    # The NER engines are needed for the full pipeline and for the private-header
-    # scan that the "..._scan_private" PS3.15 variants run on top of the profile.
-    if not ps3_15_mode or scan_private:
+    ner_scanned_tags_present = ps3_15_mode and _contains_ner_scanned_tag(ds)
+    if not ps3_15_mode or scan_private or ner_scanned_tags_present:
         if analyser is None:
-            analyser = _build_presidio_analyser(score_threshold)
+            analyser = _build_presidio_analyser(score_threshold, spacy_model_name)
         if anonymizer is None:
             anonymizer = AnonymizerEngine()
     if image_redactor is not None:
@@ -602,9 +618,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
             retain_patient_characteristics=ps3_15.retain_patient_characteristics(use_case),
             scan_private=scan_private,
         )
-        if scan_private:
-            # Private attributes were kept by the profile; scrub PHI from their
-            # values with the NER pipeline instead of removing them outright.
+        if scan_private or ner_scanned_tags_present:
             _anonymise_ds(ds, analyser, anonymizer, score_threshold,
                           gliner_pii, use_case, anonymised_headers,
                           private_only=True)

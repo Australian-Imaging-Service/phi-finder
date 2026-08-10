@@ -51,8 +51,8 @@ def _build_engines(use_case: str,
     """Builds the engines deidentify_dicom_files needs for a given use case.
 
     In the PS3.15 use cases the standard headers are handled by the basic
-    profile. The NER engines (Presidio and GLiNER) are only needed when the 
-    full NER pipeline runs on the headers, or for the "..._scan_private" variants.
+    profile. The NER models (Presidio and GLiNER) are needed for the "..._scan_private" variants, 
+    and for the free-text attributes the profile has no action for (``_NER_SCANNED_TAGS``).
     Presidio also redacts burned-in pixel PHI (if destroy_pixels=False).
 
     Parameters
@@ -70,8 +70,7 @@ def _build_engines(use_case: str,
         If True, pixel data is destroyed, so no image redactor is needed.
 
     use_transformers : bool
-        If True, GLiNER is used on top of Presidio wherever the NER pipeline
-        runs.
+        If True, GLiNER is used on top of Presidio wherever the NER pipeline runs.
 
     Returns
     -------
@@ -80,7 +79,7 @@ def _build_engines(use_case: str,
         use case does not need it.
     """
     ps3_15_mode = ps3_15.is_ps3_15_use_case(use_case)
-    ner_needed = not ps3_15_mode or ps3_15.scan_private_headers(use_case)
+    ner_needed = not ps3_15_mode or ps3_15.scan_private_headers(use_case) or bool(anonymise_dicom._NER_SCANNED_TAGS)
     if ner_needed or destroy_pixels is False:
         analyser = anonymise_dicom._build_presidio_analyser(score_threshold, spacy_model_name)
     else:
@@ -93,16 +92,13 @@ def _build_engines(use_case: str,
         )
     else:
         image_redactor = None
-    if use_transformers and ner_needed:
-        gliner_pii = anonymise_dicom._build_transformer()
-    else:
-        gliner_pii = None
+    gliner_pii = anonymise_dicom._build_transformer() if use_transformers else None
     return analyser, anonymizer, image_redactor, gliner_pii
 
 
 def deidentify_dicom_files(data_row: DataRow,
                            score_threshold: float=0.5,
-                           spacy_model_name: str="en_core_web_md",
+                           spacy_model_name: str="en_core_web_lg",
                            destroy_pixels: bool=True,
                            use_transformers: bool=False,
                            dry_run: bool=False,
@@ -123,7 +119,7 @@ def deidentify_dicom_files(data_row: DataRow,
         The score threshold for entity recognition. Entities with a score below this
         threshold will not be considered for anonymisation.
 
-    spacy_model_name : str, optional (default "en_core_web_md")
+    spacy_model_name : str, optional (default "en_core_web_lg")
         The name of the SpaCy model to use for NLP processing.
         Other options include "en_core_web_sm" and "en_core_web_lg".
     
@@ -165,8 +161,10 @@ def deidentify_dicom_files(data_row: DataRow,
     )
 
     # Accumulated across every scan/slice in the session to build one report.
+    # The diffs are keyed so the same field, redacted the same way in every
+    # slice, is held once rather than once per image.
     report_headers = []
-    note_diffs = []
+    value_diffs: dict[tuple, dict] = {}
     n_images = 0
 
     entries = list(data_row.entries_dict.items())
@@ -212,18 +210,22 @@ def deidentify_dicom_files(data_row: DataRow,
                 dcm = pydicom.dcmread(dicom)
                 if dry_run:
                     continue
-                # Snapshot the long free-text fields before anonymise_image
-                # mutates the dataset in place, so we can diff them afterwards.
-                note_snapshot = html_report.snapshot_long_text(dcm)
-                anonymised_dcm = anonymise_dicom.anonymise_image(dcm,
-                                                                 analyser=analyser,
-                                                                 anonymizer=anonymizer,
-                                                                 image_redactor=image_redactor,
-                                                                 score_threshold=score_threshold,
-                                                                 gliner_pii=gliner_pii,
-                                                                 use_case=use_case)
+                # Snapshot the header values before anonymise_image mutates
+                # the dataset in place, so we can diff them afterwards.
+                value_snapshot = html_report.snapshot_values(dcm)
+                anonymised_dcm = anonymise_dicom.anonymise_image(
+                    dcm,
+                    analyser=analyser,
+                    anonymizer=anonymizer,
+                    image_redactor=image_redactor,
+                    score_threshold=score_threshold,
+                    gliner_pii=gliner_pii,
+                    use_case=use_case,
+                    spacy_model_name=spacy_model_name,
+                )
                 report_headers.extend(html_report.read_flagged_headers(anonymised_dcm))
-                note_diffs.extend(html_report.collect_note_diffs(note_snapshot, anonymised_dcm))
+                for diff in html_report.collect_value_diffs(value_snapshot, anonymised_dcm):
+                    value_diffs.setdefault(html_report.diff_key(diff), diff)
                 n_images += 1
                 if destroy_pixels:
                     anonymised_dcm = anonymise_dicom.destroy_pixels(anonymised_dcm)
@@ -265,7 +267,7 @@ def deidentify_dicom_files(data_row: DataRow,
         report_html = html_report.build_html_report(
             report_headers, n_images,
             session_id=data_row.id, use_case=use_case,
-            note_diffs=note_diffs,
+            value_diffs=list(value_diffs.values()),
         )
         html_report.save_html_report(data_row, report_html)
         _log_session(data_row, "debug-dump7", "De-identification report uploaded.")
