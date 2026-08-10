@@ -1,8 +1,5 @@
 """Aggregates several phi-finder HTML de-identification reports into one.
 
-The aggregation logic itself is a placeholder: the reports are currently
-concatenated in the order they were given, wrapped in a single document. Only
-the interface -- paths in, a ``fileformats`` ``Html`` file out -- is settled.
 """
 
 import html
@@ -12,11 +9,11 @@ from typing import Iterable, Optional, Union
 
 from fileformats.text.unicode import Html
 
-# Where an aggregated report is written when the caller names no destination.
+
 _DEFAULT_FILENAME = "aggregated_report.html"
 
 
-def load_reports(report_paths: Iterable[Union[str, Path]]) -> "list[str]":
+def _load_reports(report_paths: Iterable[Union[str, Path]]) -> "list[str]":
     """Reads each report file into memory.
 
     Parameters
@@ -44,14 +41,12 @@ def load_reports(report_paths: Iterable[Union[str, Path]]) -> "list[str]":
     return documents
 
 
-def combine_reports(documents: "list[str]",
+def _combine_reports(documents: "list[str]",
                     sources: "Optional[list[Path]]" = None) -> str:
     """Combines loaded reports into a single HTML document.
 
     Placeholder logic: each report is embedded whole, in the order given, under
-    a heading naming the file it came from. How the reports should really be
-    merged (shared summary, de-duplicated fields, per-session sections) is not
-    decided yet.
+    a heading naming the file it came from. TODO.
 
     Parameters
     ----------
@@ -102,14 +97,12 @@ def aggregate_reports(report_paths: list[Html],
         Paths to the HTML reports to aggregate.
     output_path : str or pathlib.Path, optional
         Where to write the aggregated report. Defaults to a file in a new
-        temporary directory, which is *not* cleaned up -- the returned ``Html``
-        points at it, so the caller owns it from then on.
+        temporary directory.
 
     Returns
     -------
     fileformats.text.unicode.Html
-        The aggregated report, as a ``fileformats`` file object ready to be
-        attached to a data row or handed to a pipeline.
+        The aggregated report, as a ``fileformats`` file object.
 
     Raises
     ------
@@ -117,8 +110,8 @@ def aggregate_reports(report_paths: list[Html],
         If any of the given report paths does not exist.
     """
     paths = [Path(p) for p in report_paths]
-    documents = load_reports(paths)
-    aggregated = combine_reports(documents, sources=paths)
+    documents = _load_reports(paths)
+    aggregated = _combine_reports(documents, sources=paths)
 
     if output_path is None:
         tmp_dir = tempfile.mkdtemp(prefix="phi-finder-aggregate-")
