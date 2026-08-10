@@ -92,7 +92,7 @@ def combine_reports(documents: "list[str]",
 """
 
 
-def aggregate_reports(report_paths: Iterable[Union[str, Path]],
+def aggregate_reports(report_paths: list[Html],
                       output_path: "Optional[Union[str, Path]]" = None) -> Html:
     """Aggregates HTML de-identification reports into a single ``Html`` file.
 
