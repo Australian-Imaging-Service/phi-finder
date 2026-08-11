@@ -1,9 +1,28 @@
+import functools
 import numpy as np
+import pytest
 from pathlib import Path
+from unittest.mock import patch
 from fileformats.generic import File
 from frametree.core.row import DataRow
 
-from phi_finder.dicom_tools import html_report, utils
+from phi_finder.dicom_tools import anonymise_dicom, html_report, utils
+
+
+@pytest.fixture(autouse=True)
+def _silence_log_session(monkeypatch):
+    monkeypatch.setattr(utils, "_log_session", lambda *a, **k: None)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cache_presidio_analyser():
+    """Build the Presidio analyser once for the whole test session.
+    """
+    cached = functools.lru_cache(maxsize=None)(
+        anonymise_dicom._build_presidio_analyser
+    )
+    with patch.object(anonymise_dicom, "_build_presidio_analyser", cached):
+        yield
 
 
 def test_data_row_access(tmp_path: Path, data_row: DataRow) -> None:
