@@ -235,7 +235,7 @@ def presidio_analyser():
 
     Otherwise each build keeps ~0.6 GB alive between tests.
     """
-    return anonymise_dicom._build_presidio_analyser(0.5)
+    return anonymise_dicom._build_presidio_analyser(0.5, "en_core_web_sm")
 
 
 TEST_STRINGS_PII = ["John Doe",

@@ -5,63 +5,43 @@
 import html
 import tempfile
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Optional
 
-from fileformats.text.unicode import Html
+from fileformats.generic import File
+from frametree.core.row import DataRow
 
 
 _DEFAULT_FILENAME = "aggregated_report.html"
 
-
-def _load_reports(report_paths: Iterable[Union[str, Path]]) -> "list[str]":
-    """Reads each report file into memory.
-
-    Parameters
-    ----------
-    report_paths : iterable of str or pathlib.Path
-        Paths to the HTML reports to load, e.g. as written by
-        ``phi_finder.dicom_tools.html_report.build_html_report``.
-
-    Returns
-    -------
-    list of str
-        The documents' text, in the order the paths were given.
-
-    Raises
-    ------
-    FileNotFoundError
-        If any of the paths does not exist.
-    """
-    documents = []
-    for report_path in report_paths:
-        path = Path(report_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"No such report file: {path}")
-        documents.append(path.read_text(encoding="utf-8"))
-    return documents
+# Resource path each ``deidentify_dicom_files`` run attaches its per-session report
+# under (see ``phi_finder.dicom_tools.html_report.save_html_report``).
+_DEFAULT_REPORT_ENTRY = "deidentification_report@deidentified"
+# Resource path the dataset-level aggregated report is written back under.
+_DEFAULT_OUTPUT_ENTRY = "aggregated_deidentification_report@deidentified"
 
 
 def _combine_reports(documents: "list[str]",
-                    sources: "Optional[list[Path]]" = None) -> str:
+                    labels: "Optional[list[str]]" = None) -> str:
     """Combines loaded reports into a single HTML document.
 
     Placeholder logic: each report is embedded whole, in the order given, under
-    a heading naming the file it came from. TODO.
+    a heading naming the source it came from. TODO.
 
     Parameters
     ----------
     documents : list of str
         The report documents, as returned by ``load_reports``.
-    sources : list of pathlib.Path, optional
-        The paths the documents came from, used to label each section. Must be
-        the same length as ``documents`` when given.
+    labels : list of str, optional
+        Section headings for each document (e.g. the source file name or the
+        session id). Must be the same length as ``documents`` when given;
+        defaults to ``"Report 1"``, ``"Report 2"``, ...
 
     Returns
     -------
     str
         A self-contained HTML document holding every input report.
     """
-    labels = [p.name for p in sources] if sources else [
+    labels = labels if labels else [
         f"Report {i + 1}" for i in range(len(documents))
     ]
     sections = "\n".join(
@@ -87,38 +67,67 @@ def _combine_reports(documents: "list[str]",
 """
 
 
-def aggregate_reports(report_paths: list[Html],
-                      output_path: "Optional[Union[str, Path]]" = None) -> Html:
-    """Aggregates HTML de-identification reports into a single ``Html`` file.
+def _entry_names(row: DataRow) -> "list[str]":
+    """Returns the resource-path names of a row's entries.
+
+    ``entries_dict`` is keyed by ``(name, order_key)`` tuples; this collapses
+    those to just the names so callers can test membership by resource path.
+    """
+    return [k[0] if isinstance(k, tuple) else k for k in row.entries_dict.keys()]
+
+
+def aggregate_reports(
+        data_row: DataRow,
+        report_entry_name: str = _DEFAULT_REPORT_ENTRY,
+        output_entry_name: str = _DEFAULT_OUTPUT_ENTRY) -> None:
+    """Aggregates every session's de-identification report into one dataset report.
+
+    This is the pydra2app command entrypoint. It runs on the ``medimage/constant``
+    (dataset root) row and, like ``deidentify_dicom_files``, does its own data
+    access through the frametree row API rather than declaring typed file inputs:
+    frametree cannot serialise a collection-typed task field (e.g. ``list[Html]``),
+    so the fan-in over sessions is done here instead.
+
+    It walks every session row, collects the HTML report that
+    ``deidentify_dicom_files`` attached under ``report_entry_name``, combines them,
+    and uploads the aggregated document back onto the constant row under
+    ``output_entry_name``. Sessions without a report are skipped.
 
     Parameters
     ----------
-    report_paths : iterable of str or pathlib.Path
-        Paths to the HTML reports to aggregate.
-    output_path : str or pathlib.Path, optional
-        Where to write the aggregated report. Defaults to a file in a new
-        temporary directory.
+    data_row : DataRow
+        The ``medimage/constant`` (dataset root) row the command operates on.
+    report_entry_name : str, optional
+        Resource path of the per-session report entry to collect. Defaults to
+        the path written by ``save_html_report``.
+    output_entry_name : str, optional
+        Resource path to write the aggregated report to on the constant row.
 
     Returns
     -------
-    fileformats.text.unicode.Html
-        The aggregated report, as a ``fileformats`` file object.
-
-    Raises
-    ------
-    FileNotFoundError
-        If any of the given report paths does not exist.
+    None : None
+        The aggregated report is uploaded to the data row; nothing is returned.
     """
-    paths = [Path(p) for p in report_paths]
-    documents = _load_reports(paths)
-    aggregated = _combine_reports(documents, sources=paths)
+    documents = []
+    labels = []
+    for session in data_row.frameset.rows("session"):
+        if report_entry_name not in _entry_names(session):
+            continue
+        # Assignment access (``.item``) downloads the report file locally.
+        report_file = session.entry(report_entry_name).item
+        documents.append(Path(report_file).read_text(encoding="utf-8"))
+        labels.append(session.id)
 
-    if output_path is None:
-        tmp_dir = tempfile.mkdtemp(prefix="phi-finder-aggregate-")
+    aggregated = _combine_reports(documents, labels=labels)
+
+    with tempfile.TemporaryDirectory(prefix="phi-finder-aggregate-") as tmp_dir:
         destination = Path(tmp_dir) / _DEFAULT_FILENAME
-    else:
-        destination = Path(output_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(aggregated, encoding="utf-8")
+        destination.write_text(aggregated, encoding="utf-8")
 
-    return Html(destination)
+        if output_entry_name in _entry_names(data_row):
+            entry = data_row.entry(output_entry_name)
+        else:
+            entry = data_row.create_entry(output_entry_name, datatype=File)
+        # Assignment uploads the file while the temp dir is still alive.
+        entry.item = File(destination)
+    return None
