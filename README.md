@@ -64,9 +64,9 @@ anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
 ## De-identifying a file and generating its HTML report
 
 `html_report` builds a self-contained HTML report describing what was removed:
-the names of the scrubbed header fields, plus a before/after diff of every long
-free-text field (e.g. a radiology report). The snapshot must be taken **before**
-`anonymise_image`, which mutates the dataset in place.
+the names of the scrubbed header fields, plus a before/after diff of every
+changed header value (e.g. a radiology report). The snapshot must be taken
+**before** `anonymise_image`, which mutates the dataset in place.
 
 ```python
 import pydicom as dicom
@@ -75,28 +75,29 @@ from phi_finder.dicom_tools import anonymise_dicom, html_report
 path = "/path/to/some/dicom.dcm"
 dcm = dicom.dcmread(path)
 
-# Record the free-text fields before they are redacted.
-note_snapshot = html_report.snapshot_long_text(dcm)
+# Record the header values before they are redacted.
+value_snapshot = html_report.snapshot_values(dcm)
 
-anonymised_dcm = anonymise_dicom.anonymise_image(dcm)
+gliner_pii = anonymise_dicom._build_transformer()
+anonymised_dcm = anonymise_dicom.anonymise_image(dcm, gliner_pii=gliner_pii, use_case='dicom_retain_patient_scan_private', score_threshold=0.15)
 anonymised_dcm.save_as('/path/to/some/dicom_anon.dcm')
 
 report = html_report.build_html_report(
     html_report.read_flagged_headers(anonymised_dcm),
     n_images=1,
     session_id="my-session",
-    use_case="Standard",
-    note_diffs=html_report.collect_note_diffs(note_snapshot, anonymised_dcm),
+    use_case="dicom_retain_patient_scan_private",
+    value_diffs=html_report.collect_value_diffs(value_snapshot, anonymised_dcm),
 )
 with open('/path/to/some/deidentification_report.html', 'w', encoding='utf-8') as f:
     f.write(report)
 ```
 
-`note_diffs` is optional — omit it (along with `snapshot_long_text` /
-`collect_note_diffs`) to get a report that lists only the names of the scrubbed
+`value_diffs` is optional — omit it (along with `snapshot_values` /
+`collect_value_diffs`) to get a report that lists only the names of the scrubbed
 header fields.
 
-> **Warning:** a report built with `note_diffs` reproduces the *original* clinical-note text, since the struck-through spans are the PHI itself.
+> **Warning:** a report built with `value_diffs` reproduces the *original* clinical-note text, since the struck-through spans are the PHI itself.
 
 ## De-identifying headers with the DICOM PS3.15 profile
 

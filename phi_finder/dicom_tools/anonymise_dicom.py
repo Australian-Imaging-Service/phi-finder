@@ -545,7 +545,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
                     gliner_pii: UniEncoderSpanGLiNER=None,
-                    use_case: str='Standard',
+                    use_case: str='dicom_retain_patient_scan_private',
                     spacy_model_name: str="en_core_web_lg",
                     ) -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
