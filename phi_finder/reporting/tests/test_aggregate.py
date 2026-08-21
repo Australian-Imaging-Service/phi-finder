@@ -1,48 +1,40 @@
-import pytest
-from fileformats.text.unicode import Html
-
 from phi_finder.reporting import aggregate
 
 
-def _write_report(directory, name, body):
-    path = directory / name
-    path.write_text(
-        f"<!DOCTYPE html><html><body><p>{body}</p></body></html>", encoding="utf-8"
-    )
-    return path
-
-
-def test_aggregate_returns_html_fileformat(tmp_path):
-    paths = [
-        _write_report(tmp_path, "one.html", "session one"),
-        _write_report(tmp_path, "two.html", "session two"),
+def test_combine_reports_embeds_every_document():
+    docs = [
+        "<!DOCTYPE html><html><body><p>session one</p></body></html>",
+        "<!DOCTYPE html><html><body><p>session two</p></body></html>",
     ]
 
-    result = aggregate.aggregate_reports(paths)
+    combined = aggregate._combine_reports(docs)
 
-    assert isinstance(result, Html)
-    assert result.fspath.exists()
-    assert result.fspath.suffix == ".html"
-
-
-def test_aggregate_writes_to_given_output_path(tmp_path):
-    paths = [_write_report(tmp_path, "one.html", "session one")]
-    output = tmp_path / "out" / "combined.html"
-
-    result = aggregate.aggregate_reports(paths, output_path=output)
-
-    assert result.fspath == output
-    assert output.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+    assert isinstance(combined, str)
+    assert combined.startswith("<!DOCTYPE html>")
+    assert "2 report(s) aggregated" in combined
+    assert "session one" in combined
+    assert "session two" in combined
 
 
-def test_aggregate_with_no_inputs_still_returns_a_document(tmp_path):
-    result = aggregate.aggregate_reports([], output_path=tmp_path / "empty.html")
+def test_combine_reports_uses_default_labels_when_none_given():
+    combined = aggregate._combine_reports(["<p>a</p>", "<p>b</p>"])
 
-    assert isinstance(result, Html)
-    assert "0 report(s) aggregated" in result.fspath.read_text(encoding="utf-8")
+    assert "Report 1" in combined
+    assert "Report 2" in combined
 
 
-def test_aggregate_raises_on_missing_report(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        aggregate.aggregate_reports([tmp_path / "absent.html"])
+def test_combine_reports_uses_and_escapes_given_labels():
+    combined = aggregate._combine_reports(
+        ["<p>body</p>"], labels=["session <1> & 2"]
+    )
 
+    # Labels are HTML-escaped so they cannot break out of the heading.
+    assert "session &lt;1&gt; &amp; 2" in combined
+    assert "session <1> & 2" not in combined
+
+
+def test_combine_reports_with_no_documents_still_returns_a_document():
+    combined = aggregate._combine_reports([])
+
+    assert combined.startswith("<!DOCTYPE html>")
+    assert "0 report(s) aggregated" in combined

@@ -62,8 +62,18 @@ def destroy_pixels(ds: dicom.dataset.FileDataset) -> dicom.dataset.FileDataset:
         if getattr(ds, "file_meta", None) is None:
             ds.file_meta = dicom.dataset.FileMetaDataset()
         ds.file_meta.TransferSyntaxUID = dicom.uid.ExplicitVRLittleEndian
-        ds.is_implicit_VR = False
-        ds.is_little_endian = True
+        # The pixels are now little-endian. save_as() in pydicom >=3.0 refuses
+        # to write a dataset read as big-endian, treating it as a forbidden
+        # endianness conversion, so record little-endian as the original
+        # encoding. Keep the original VR-encoding (implicit vs explicit) intact:
+        # an implicit-VR source has no per-element VRs, and claiming it was
+        # explicit would make save_as write a null VR for every element.
+        if hasattr(ds, "original_encoding"):  # pydicom >= 3.0
+            original_implicit_vr = ds.original_encoding[0]
+            ds.set_original_encoding(original_implicit_vr, True, ds.original_character_set)
+        else:  # pydicom < 3.0
+            ds.is_implicit_VR = False
+            ds.is_little_endian = True
     return ds
 
 
@@ -545,7 +555,7 @@ def anonymise_image(ds: dicom.dataset.FileDataset,
                     image_redactor: DicomImageRedactorEngine = None,
                     score_threshold: float=0.5,
                     gliner_pii: UniEncoderSpanGLiNER=None,
-                    use_case: str='Standard',
+                    use_case: str='dicom_retain_patient_scan_private',
                     spacy_model_name: str="en_core_web_lg",
                     ) -> dicom.dataset.FileDataset:
     """Anonymises a DICOM image by redacting personal information.
