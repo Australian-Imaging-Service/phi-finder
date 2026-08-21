@@ -195,8 +195,9 @@ def _resolve_source(path: tuple, sources: dict, removed: bool) -> str:
     path : tuple
         An element path as produced by ``_walk_values``.
     sources : dict
-        Maps a tag (in ``str(Tag)`` form, as recorded in the audit element) to
-        the source that de-identified it.
+        Maps a tag (in ``_tidy_tag`` canonical form, so the match holds across
+        pydicom versions whose ``str(Tag)`` differ) to the source that
+        de-identified it.
     removed : bool
         Whether the element is gone from the dataset altogether.
 
@@ -212,7 +213,7 @@ def _resolve_source(path: tuple, sources: dict, removed: bool) -> str:
     if removed and len(tags) > 1:
         order = list(reversed(tags[:-1])) + [tags[-1]]
     for tag in order:
-        source = sources.get(str(tag))
+        source = sources.get(_tidy_tag(str(tag)))
         if source:
             return source
     return ""
@@ -257,7 +258,7 @@ def collect_value_diffs(snapshot: dict, ds: pydicom.dataset.Dataset) -> list[dic
     """
     current = {path: value for path, _name, value in _walk_values(ds)}
     sources = {
-        header.get("tag"): header.get("source", "")
+        _tidy_tag(header.get("tag") or ""): header.get("source", "")
         for header in read_flagged_headers(ds)
     }
     diffs = []

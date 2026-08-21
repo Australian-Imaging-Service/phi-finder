@@ -64,8 +64,8 @@ DESTROY_PIXELS_SOURCES = [
 def test_destroy_pixels_round_trips_through_save_as(source, tmp_path):
     dataset = pydicom.dcmread(get_testdata_files(source)[0])
     anonymised_dataset = anonymise_dicom.destroy_pixels(dataset)
-    assert anonymised_dataset.is_implicit_VR is False
-    assert anonymised_dataset.is_little_endian is True
+    assert (anonymised_dataset.file_meta.TransferSyntaxUID
+            == pydicom.uid.ExplicitVRLittleEndian)
 
     path = tmp_path / "anonymised.dcm"
     anonymised_dataset.save_as(path)
@@ -474,7 +474,8 @@ def test_ps3_15_scans_sr_text_value(use_case):
     assert "XXXX" in text_value
     # The change is recorded in the audit block like any other redacted header.
     flagged = json.loads(anonymised[0x0209, 0x1000].value)
-    assert any(header["tag"] == "(0040, a160)" for header in flagged)
+    text_value_tag = str(pydicom.tag.Tag(0x0040, 0xA160))
+    assert any(header["tag"] == text_value_tag for header in flagged)
 
 
 def test_ps3_15_without_free_text_builds_no_analyser(monkeypatch):
