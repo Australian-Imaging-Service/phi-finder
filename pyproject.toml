@@ -8,27 +8,24 @@ description = "Collection of tools to check uploaded scans and records for ident
 readme = "README.md"
 version = "0.1.18"
 requires-python = ">=3.11,<3.13"
-dependencies = ["typing_extensions >=4.6.3; python_version < '4.0'",
-                "numpy==1.26.4",
-                "presidio_structured>=0.0.4a0",
-                "presidio-image-redactor>=0.0.53",
-                "presidio_analyzer>=2.2.355",
-                "presidio_anonymizer>=2.2.355",
-                "spacy",
-                "opencv-python>=4.10.0.84",
-                "transformers>=4.48.2",
-                "torch==2.6.0",
-                "gliner==0.2.26",
-                "fileformats-medimage-extras",
+dependencies = [
+    "typing_extensions >=4.6.3; python_version < '4.0'",
+    "numpy==1.26.4",
+    "presidio_structured>=0.0.4a0",
+    "presidio-image-redactor>=0.0.53",
+    "presidio_analyzer>=2.2.355",
+    "presidio_anonymizer>=2.2.355",
+    "spacy",
+    "opencv-python>=4.10.0.84",
+    "transformers>=4.48.2",
+    "torch==2.6.0",
+    "gliner==0.2.26",
+    "fileformats-medimage-extras",
 ]
 
 authors = [{ name = "Pedro Faustini", email = "pedro.faustini@mq.edu.au" }]
 maintainers = [{ name = "Pedro Faustini", email = "pedro.faustini@mq.edu.au" }]
-keywords = [
-    "anonymisation",
-    "dicom",
-    "clinical data",
-]
+keywords = ["anonymisation", "dicom", "clinical data"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -70,7 +67,7 @@ test = [
     "medimages4tests",
     "fileformats-extras",
     "fileformats-medimage-extras",
-    "xnat>=0.7.2"
+    "xnat>=0.7.2",
 ]
 docs = [
     "packaging",
@@ -105,7 +102,6 @@ exclude = ["tests"]
 include = ["./phi_finder"]
 
 [tool.mypy]
-python_version = "3.11"
 ignore_missing_imports = true
 strict = true
 namespace_packages = true
